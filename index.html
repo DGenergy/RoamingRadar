@@ -143,6 +143,9 @@
       <label class="f">Storm cones <select id="coneMode"><option value="group">Grouped (fronts)</option><option value="edge">Radar edges (pixels)</option><option value="both">Grouped + edges</option><option value="each">Every cell</option><option value="none">Off</option></select></label>
       <label class="f">Min ProbSevere <span class="row"><input type="range" id="minProb" min="0" max="80" value="10" step="5"><span class="unit" id="minProbV">10%</span></span></label>
     </div>
+    <h3>Wind</h3>
+    <label class="tog"><input type="checkbox" id="windHeat" checked><span>Wind-speed heat map under the particles</span></label>
+    <label class="f">Heat map opacity <span class="row"><input type="range" id="windHeatOp" min="10" max="90" value="40"><span class="unit" id="windHeatOpV">40%</span></span></label>
     <h3>Map</h3>
     <div class="grid2">
       <label class="f">Base style <select id="styleSel"><option value="dark">Dark</option><option value="fiord">Fiord</option><option value="positron">Light</option><option value="liberty">Liberty (detail)</option><option value="bright">Bright (detail)</option></select></label>

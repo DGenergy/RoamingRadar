@@ -1,6 +1,6 @@
 /* Radar Route service worker — caches the app shell and the map library.
    Live weather data is always fetched from the network (never cached). */
-const VERSION = 'rr-v2';
+const VERSION = 'rr-v3';
 const SHELL = [
   './', './index.html', './styles.css', './app.js', './tracker.js', './wind.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png'
@@ -21,7 +21,8 @@ self.addEventListener('fetch', (e) => {
   if (!isShell && !isLib) return; // weather data, tiles, routing: straight to network
   e.respondWith(
     caches.match(e.request).then((hit) => {
-      const fetchAndCache = fetch(e.request).then((res) => {
+      // same-origin shell files: always revalidate with the server so a new deploy is picked up on the next launch
+      const fetchAndCache = fetch(isShell ? new Request(e.request, { cache: 'no-cache' }) : e.request).then((res) => {
         if (res && res.ok) caches.open(VERSION).then((c) => c.put(e.request, res.clone()));
         return res;
       }).catch(() => hit);

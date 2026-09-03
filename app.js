@@ -38,7 +38,7 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem('rr.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem('rr.' + k, JSON.stringify(v)); } catch (e) {} }
 };
-const settings = Object.assign({ style: 'dark', overlay: 'none', overlayOp: 75, hs: 60, coneMode: 'group', minProb: 10, loop: '120,10', sound: true, layers: { radar: true, alerts: true, storms: true, wind: false, metar: false, terrain: false } }, store.get('settings', {}));
+const settings = Object.assign({ style: 'dark', overlay: 'none', overlayOp: 75, hs: 60, coneMode: 'group', minProb: 10, loop: '120,10', sound: true, windHeat: true, windHeatOp: 40, layers: { radar: true, alerts: true, storms: true, wind: false, metar: false, terrain: false } }, store.get('settings', {}));
 function saveSettings() { store.set('settings', settings); }
 
 /* ---------- diagnostics ---------- */
@@ -71,7 +71,7 @@ const map = new maplibregl.Map({ container: 'map', style: STYLE_BASE + settings.
 map.addControl(new maplibregl.AttributionControl({ compact: true }), 'top-left');
 map.on('moveend', () => store.set('view', { c: [map.getCenter().lng, map.getCenter().lat], z: map.getZoom() }));
 const dBase = src('Basemap', 'OpenFreeMap vector tiles'); dBase.start();
-map.on('load', () => { mapLoaded = true; dBase.ok('style loaded', settings.style); buildAll(); });
+map.on('load', () => { mapLoaded = true; dBase.ok('style loaded', settings.style); buildAll(); setTimeout(() => { const a = document.querySelector('.maplibregl-ctrl-attrib'); if (a) a.classList.remove('maplibregl-compact-show'); }, 800); });
 let radarErr = 0;
 map.on('error', (e) => {
   const m = e && e.error && e.error.message ? e.error.message : String(e.error || e); const sid = e.sourceId || '';
@@ -80,7 +80,7 @@ map.on('error', (e) => {
   else if (!sid && !mapLoaded) dBase.fail(new Error(m));
 });
 $('#northBtn').onclick = () => map.resetNorthPitch({ duration: 400 });
-const OVERLAY_IDS = new Set(['hillshade', 'overlay', 'alerts-fill', 'alerts-line', 'cone-fill', 'cone-line', 'contour-line', 'contour-label', 'ps-outline', 'ps-vector', 'edge-fill', 'edge-line', 'edge-contour', 'edge-label', 'edge-outline', 'metar-pt', 'metar-lbl', 'route-casing', 'route-line', 'tick-pt', 'tick-lbl', 'places-pt', 'places-lbl', 'me-halo', 'me-pt']);
+const OVERLAY_IDS = new Set(['hillshade', 'overlay', 'windheat', 'alerts-fill', 'alerts-line', 'cone-fill', 'cone-line', 'contour-line', 'contour-label', 'ps-outline', 'ps-vector', 'edge-fill', 'edge-line', 'edge-contour', 'edge-label', 'edge-outline', 'metar-pt', 'metar-lbl', 'route-casing', 'route-line', 'tick-pt', 'tick-lbl', 'places-pt', 'places-lbl', 'me-halo', 'me-pt']);
 function anchorBelowRoads(exclude) { const l = map.getStyle().layers.find(l => !exclude.includes(l.id) && (l.id.startsWith('radar-') || OVERLAY_IDS.has(l.id) || l.type === 'line' || l.type === 'symbol')); return l ? l.id : undefined; }
 function setVis(ids, on) { ids.forEach(id => { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none'); }); }
 const overlayBuilders = [];
@@ -148,7 +148,7 @@ async function buildRadar() {
   const latest = await findLatestFrame();
   if (!latest) { dRadar.fail(new Error('no recent mrms::lcref tile answered')); $('#frameSub').textContent = 'MRMS via IEM · no frames'; return; }
   const [spanMin, stepMin] = settings.loop.split(',').map(Number); const n = Math.floor(spanMin / stepMin) + 1;
-  const beforeId = map.getStyle().layers.find(l => (OVERLAY_IDS.has(l.id) && l.id !== 'hillshade' && l.id !== 'overlay') || (l.type === 'symbol' && !l.id.startsWith('radar-')));
+  const beforeId = map.getStyle().layers.find(l => (OVERLAY_IDS.has(l.id) && l.id !== 'hillshade' && l.id !== 'overlay' && l.id !== 'windheat') || (l.type === 'symbol' && !l.id.startsWith('radar-')));
   for (let i = n - 1; i >= 0; i--) {
     const t = new Date(latest.t.getTime() - i * stepMin * 60000); const id = `radar-${stampUTC(t)}`;
     if (map.getSource(id)) continue;
@@ -156,6 +156,7 @@ async function buildRadar() {
     map.addLayer({ id, type: 'raster', source: id, layout: { visibility: settings.layers.radar ? 'visible' : 'none' }, paint: { 'raster-opacity': 0, 'raster-opacity-transition': { duration: 0 }, 'raster-resampling': 'nearest' } }, beforeId ? beforeId.id : undefined);
     radarFrames.push({ t, source: id, layer: id });
   }
+  placeWindHeat();
   $('#scrubber').max = radarFrames.length - 1;
   const lt = $('#loopTicks'); lt.innerHTML = '';
   [0, 0.5, 1].forEach(f => { const s = document.createElement('span'); const m = Math.round(spanMin * (1 - f)); s.textContent = f === 1 ? 'latest' : `−${m >= 60 ? (m / 60).toFixed(m % 60 ? 1 : 0) + ' h' : m + ' min'}`; lt.appendChild(s); });
@@ -408,7 +409,7 @@ function windExtent() { const b = map.getBounds(); const cx = (b.getWest() + b.g
 function viewInside(f) { const b = map.getBounds(); return b.getWest() >= f.w && b.getEast() <= f.e && b.getSouth() >= f.s && b.getNorth() <= f.n; }
 async function fetchJSONRetry(url, tries) {
   for (let k = 0; ; k++) {
-    try { const r = await fetch(url); const txt = await r.text(); let j; try { j = JSON.parse(txt); } catch (pe) { throw new Error(`Open-Meteo replied ${r.status} with "${txt.trim().slice(0, 160)}" — provider-side outage, retrying`); } if (j && j.error) throw new Error('Open-Meteo: ' + (j.reason || 'API error')); if (!r.ok) throw new Error(`HTTP ${r.status}`); return j; }
+    try { const r = await fetch(url); const txt = await r.text(); let j; try { j = JSON.parse(txt); } catch (pe) { throw new Error(`Open-Meteo replied ${r.status}: "${txt.trim().slice(0, 120)}"`); } if (j && j.error) throw new Error('Open-Meteo: ' + (j.reason || 'API error')); if (!r.ok) throw new Error(`HTTP ${r.status}`); return j; }
     catch (e) { if (k >= tries) throw e; dWind.note(`${e.message} (${k + 1}/${tries})`); await new Promise(res => setTimeout(res, 2000 * Math.pow(2, k))); }
   }
 }
@@ -420,8 +421,18 @@ async function loadWind(force) {
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) { lats.push((ext.s + (ext.n - ext.s) * j / (ny - 1)).toFixed(3)); lngs.push((ext.w + (ext.e - ext.w) * i / (nx - 1)).toFixed(3)); }
   try {
     const CH = 42, chunks = []; for (let k = 0; k < lats.length; k += CH) chunks.push([lats.slice(k, k + CH), lngs.slice(k, k + CH)]);
-    const results = [];
-    for (const [la, lo] of chunks) results.push(await fetchJSONRetry(`${OM}?latitude=${la.join(',')}&longitude=${lo.join(',')}&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&forecast_hours=8&wind_speed_unit=kn&timezone=UTC`, 3));
+    // Open-Meteo picks a model per point ("best match"); when that model's backend is down it answers
+    // "allEndpointsUnavailable". Fall back through explicitly named models served from other backends.
+    const MODELS = [['best match', ''], ['GFS+HRRR seamless', '&models=gfs_seamless'], ['ECMWF IFS 0.25°', '&models=ecmwf_ifs025'], ['GFS global', '&models=gfs_global']];
+    let results = null, modelUsed = '', lastErr = null;
+    for (const [name, q] of MODELS) {
+      try {
+        const out = [];
+        for (const [la, lo] of chunks) out.push(await fetchJSONRetry(`${OM}?latitude=${la.join(',')}&longitude=${lo.join(',')}&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&forecast_hours=8&wind_speed_unit=kn&timezone=UTC${q}`, 1));
+        results = out; modelUsed = name; break;
+      } catch (e) { lastErr = e; dWind.note(`${name}: ${e.message.slice(0, 90)} — trying next model`); }
+    }
+    if (!results) throw lastErr;
     const pts = results.flatMap(r => Array.isArray(r) ? r : [r]);
     if (pts.length !== lats.length) throw new Error(`expected ${lats.length} points, got ${pts.length}`);
     // hour 0 = the hour containing "now"
@@ -433,9 +444,9 @@ async function loadWind(force) {
       hours.push({ u, v, spd, gust, time: Date.parse(t0[i0 + h] + 'Z') });
     }
     windField = Object.assign({ nx, ny, hours, at: Date.now() }, ext);
-    WindLayer.setField(windField); windHour = Math.min(windHour, hours.length - 1); $('#windHour').max = hours.length - 1; $('#windHour').value = windHour; WindLayer.setHour(windHour); updateWindLabel(); WindLayer.start();
+    WindLayer.setField(windField); windHour = Math.min(windHour, hours.length - 1); $('#windHour').max = hours.length - 1; $('#windHour').value = windHour; WindLayer.setHour(windHour); updateWindLabel(); WindLayer.start(); drawWindHeat();
     const mx = Math.max(...hours[0].spd), mg = Math.max(...hours[0].gust);
-    dWind.ok(`${pts.length}-point grid · ${hours.length} h · now max ${Math.round(mx)} kt, gust ${Math.round(mg)}`, `${chunks.length} requests · refreshes when you leave the area or after 30 min`);
+    dWind.ok(`${pts.length}-point grid · ${hours.length} h · now max ${Math.round(mx)} kt, gust ${Math.round(mg)}`, `model: ${modelUsed} · ${chunks.length} requests · refreshes when you leave the area or after 30 min`);
   } catch (e) { dWind.fail(e, windField ? 'showing the last good field · retrying in 60 s' : 'retrying in 60 s'); clearTimeout(windRetry); windRetry = setTimeout(() => loadWind(true), 60000); }
   windFetching = false;
 }
@@ -443,11 +454,26 @@ function updateWindLabel() {
   const h = windField && windField.hours[windHour]; if (!h) { $('#windHourV').textContent = 'now'; return; }
   const t = new Date(h.time); $('#windHourV').textContent = (windHour === 0 ? 'now' : `+${windHour} h`) + ' · ' + fmtLocal(t);
 }
-$('#windHour').oninput = (e) => { windHour = Number(e.target.value); WindLayer.setHour(windHour); updateWindLabel(); };
+$('#windHour').oninput = (e) => { windHour = Number(e.target.value); WindLayer.setHour(windHour); updateWindLabel(); drawWindHeat(); };
+function drawWindHeat() {
+  if (!windField || !settings.layers.wind || !settings.windHeat) { if (map.getLayer('windheat')) map.setLayoutProperty('windheat', 'visibility', 'none'); return; }
+  const im = WindLayer.heatImage(windField, windHour, 1);
+  if (!map.getSource('windheat')) {
+    map.addSource('windheat', { type: 'image', url: im.url, coordinates: im.coordinates });
+    const anchor = map.getStyle().layers.find(l => l.id.startsWith('radar-')) || map.getStyle().layers.find(l => OVERLAY_IDS.has(l.id) && !['hillshade', 'overlay', 'windheat'].includes(l.id)) || map.getStyle().layers.find(l => l.type === 'symbol');
+    map.addLayer({ id: 'windheat', type: 'raster', source: 'windheat', paint: { 'raster-opacity': settings.windHeatOp / 100, 'raster-opacity-transition': { duration: 0 }, 'raster-fade-duration': 0, 'raster-resampling': 'linear' } }, anchor ? anchor.id : undefined);
+  } else { map.getSource('windheat').updateImage({ url: im.url, coordinates: im.coordinates }); }
+  map.setLayoutProperty('windheat', 'visibility', 'visible'); placeWindHeat();
+}
+function placeWindHeat() { if (!map.getLayer('windheat')) return; const a = map.getStyle().layers.find(l => l.id.startsWith('radar-')) || map.getStyle().layers.find(l => OVERLAY_IDS.has(l.id) && !['hillshade', 'overlay', 'windheat'].includes(l.id)) || map.getStyle().layers.find(l => l.type === 'symbol'); if (a && a.id !== 'windheat') map.moveLayer('windheat', a.id); }
+overlayBuilders.push(() => { if (windField) drawWindHeat(); });
+$('#windHeat').checked = settings.windHeat !== false; $('#windHeat').onchange = (e) => { settings.windHeat = e.target.checked; saveSettings(); drawWindHeat(); };
+$('#windHeatOp').value = settings.windHeatOp; $('#windHeatOpV').textContent = settings.windHeatOp + '%';
+$('#windHeatOp').oninput = (e) => { settings.windHeatOp = Number(e.target.value); $('#windHeatOpV').textContent = settings.windHeatOp + '%'; saveSettings(); if (map.getLayer('windheat')) map.setPaintProperty('windheat', 'raster-opacity', settings.windHeatOp / 100); };
 function setWindOn(on) {
   $('#windRow').hidden = !on; $('#windLegend').hidden = !on;
   if (on) { if (windField) { WindLayer.setField(windField); WindLayer.start(); } loadWind(!windField); }
-  else { WindLayer.off(); windField = null; clearTimeout(windRetry); dWind.note('off'); }
+  else { WindLayer.off(); windField = null; clearTimeout(windRetry); if (map.getLayer('windheat')) map.setLayoutProperty('windheat', 'visibility', 'none'); dWind.note('off'); }
 }
 map.on('click', (e) => {
   if (!settings.layers.wind || pickTarget != null) return;
@@ -494,7 +520,7 @@ function applyOverlay() {
   if (settings.overlay === 'none') { dOverlay.note('off'); return; }
   const o = OVERLAYS[settings.overlay]; dOverlay.start();
   map.addSource('overlay', { type: 'raster', tiles: o.tiles, tileSize: 256, maxzoom: o.maxzoom, attribution: o.attribution });
-  map.addLayer({ id: 'overlay', type: 'raster', source: 'overlay', paint: { 'raster-opacity': settings.overlayOp / 100, 'raster-opacity-transition': { duration: 0 } } }, map.getLayer('hillshade') ? 'hillshade' : anchorBelowRoads(['overlay']));
+  map.addLayer({ id: 'overlay', type: 'raster', source: 'overlay', paint: { 'raster-opacity': settings.overlayOp / 100, 'raster-opacity-transition': { duration: 0 } } }, map.getLayer('hillshade') ? 'hillshade' : anchorBelowRoads(['overlay', 'windheat']));
   map.once('idle', () => { if (settings.overlay !== 'none') dOverlay.ok(`${settings.overlay} at ${settings.overlayOp}%`, o.attribution); });
 }
 $('#overlaySel').value = settings.overlay; $('#overlaySel').onchange = (e) => { settings.overlay = e.target.value; saveSettings(); applyOverlay(); };
@@ -506,7 +532,7 @@ function toggleTerrain(on) {
   if (on) {
     dTerrain.start();
     if (!map.getSource('terrain-dem')) map.addSource('terrain-dem', { type: 'raster-dem', tiles: [TERRAIN], encoding: 'terrarium', tileSize: 256, maxzoom: 15, attribution: 'Terrain: Mapzen/AWS' });
-    if (!map.getLayer('hillshade')) map.addLayer({ id: 'hillshade', type: 'hillshade', source: 'terrain-dem', paint: { 'hillshade-exaggeration': settings.hs / 100, 'hillshade-shadow-color': '#05080B', 'hillshade-highlight-color': '#5C7080', 'hillshade-accent-color': '#0F1418', 'hillshade-illumination-direction': 315 } }, anchorBelowRoads(['hillshade', 'overlay']));
+    if (!map.getLayer('hillshade')) map.addLayer({ id: 'hillshade', type: 'hillshade', source: 'terrain-dem', paint: { 'hillshade-exaggeration': settings.hs / 100, 'hillshade-shadow-color': '#05080B', 'hillshade-highlight-color': '#5C7080', 'hillshade-accent-color': '#0F1418', 'hillshade-illumination-direction': 315 } }, anchorBelowRoads(['hillshade', 'overlay', 'windheat']));
     if (map.getLayer('overlay')) map.moveLayer('overlay', 'hillshade');
     setTimeout(() => { if (settings.layers.terrain && map.getLayer('hillshade')) dTerrain.ok(`hillshade at ${settings.hs}%`); }, 2500);
   } else { if (map.getLayer('hillshade')) map.removeLayer('hillshade'); if (map.getSource('terrain-dem')) map.removeSource('terrain-dem'); dTerrain.note('off'); }

@@ -7,6 +7,33 @@ const WindLayer = (() => {
   let lastFrame = 0;
   const RAMP = [[0, '#7FA7C4'], [5, '#6FBFD8'], [10, '#5FD68A'], [15, '#C9DE7A'], [20, '#F0C95A'], [25, '#F0A35A'], [30, '#E8774F'], [40, '#E0554D'], [50, '#C41E9F']];
   function color(kt) { let c = RAMP[0][1]; for (const [t, col] of RAMP) if (kt >= t) c = col; return c; }
+  const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  const RAMP_RGB = RAMP.map(([t, c]) => [t, hex(c)]);
+  function colorSmooth(kt) { // interpolated ramp -> [r,g,b]
+    if (kt <= RAMP_RGB[0][0]) return RAMP_RGB[0][1]; const last = RAMP_RGB[RAMP_RGB.length - 1]; if (kt >= last[0]) return last[1];
+    for (let i = 1; i < RAMP_RGB.length; i++) { const [t1, c1] = RAMP_RGB[i], [t0, c0] = RAMP_RGB[i - 1]; if (kt <= t1) { const f = (kt - t0) / (t1 - t0); return [c0[0] + (c1[0] - c0[0]) * f, c0[1] + (c1[1] - c0[1]) * f, c0[2] + (c1[2] - c0[2]) * f]; } }
+    return last[1];
+  }
+  const mercY = (lat) => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
+  const invMercY = (y) => (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180 / Math.PI;
+  // Render the speed field for an hour as an image aligned to the field's bounds in web-mercator,
+  // ready for a MapLibre image source. Returns { url, coordinates }.
+  function heatImage(f, h, alpha) {
+    const IW = 160, IH = 120; const cv = document.createElement('canvas'); cv.width = IW; cv.height = IH; const c2 = cv.getContext('2d');
+    const img = c2.createImageData(IW, IH); const d = img.data; const hr = f.hours[h]; const yN = mercY(f.n), yS = mercY(f.s);
+    for (let r = 0; r < IH; r++) {
+      const lat = invMercY(yN + (yS - yN) * r / (IH - 1)); const fy = Math.max(0, Math.min(f.ny - 1, (lat - f.s) / (f.n - f.s) * (f.ny - 1)));
+      const j0 = Math.floor(fy), j1 = Math.min(j0 + 1, f.ny - 1), ty = fy - j0;
+      for (let q = 0; q < IW; q++) {
+        const fx = q / (IW - 1) * (f.nx - 1); const i0 = Math.floor(fx), i1 = Math.min(i0 + 1, f.nx - 1), tx = fx - i0;
+        const s00 = hr.spd[j0 * f.nx + i0], s10 = hr.spd[j0 * f.nx + i1], s01 = hr.spd[j1 * f.nx + i0], s11 = hr.spd[j1 * f.nx + i1];
+        const sp = (s00 + (s10 - s00) * tx) + ((s01 + (s11 - s01) * tx) - (s00 + (s10 - s00) * tx)) * ty;
+        const rgb = colorSmooth(sp); const k = (r * IW + q) * 4; d[k] = rgb[0]; d[k + 1] = rgb[1]; d[k + 2] = rgb[2]; d[k + 3] = Math.round(255 * alpha);
+      }
+    }
+    c2.putImageData(img, 0, 0);
+    return { url: cv.toDataURL('image/png'), coordinates: [[f.w, f.n], [f.e, f.n], [f.e, f.s], [f.w, f.s]] };
+  }
 
   function resize() {
     const r = map.getContainer().getBoundingClientRect();
@@ -18,7 +45,8 @@ const WindLayer = (() => {
   }
   function count() { return Math.max(1200, Math.min(4000, Math.round((W * H) / (dpr * dpr) / 380))); }
   function bounds() { const b = map.getBounds(); return { w: b.getWest(), s: b.getSouth(), e: b.getEast(), n: b.getNorth() }; }
-  function spawn(p, b) { p.lng = b.w + Math.random() * (b.e - b.w); p.lat = b.s + Math.random() * (b.n - b.s); p.age = 0; p.life = 50 + Math.random() * 90; p.sx = NaN; p.sy = NaN; return p; }
+  const HIST = 14;
+  function spawn(p, b) { p.lng = b.w + Math.random() * (b.e - b.w); p.lat = b.s + Math.random() * (b.n - b.s); p.age = 0; p.life = 60 + Math.random() * 100; p.h = []; return p; }
   function seed() { const b = bounds(); const n = count(); particles = []; for (let i = 0; i < n; i++) { const p = spawn({}, b); p.age = Math.random() * p.life; particles.push(p); } }
 
   // bilinear sample of the selected hour at lng/lat -> [u, v, spd] in knots, or null outside the field
@@ -42,25 +70,29 @@ const WindLayer = (() => {
     const b = bounds();
     // degrees per screen pixel at this view, so particle speed on screen is independent of zoom (px/frame ∝ knots)
     const degPerPxX = (b.e - b.w) / (W / dpr), degPerPxY = (b.n - b.s) / (H / dpr);
-    const pxPerKt = 0.05 * (dt / 16);            // 20 kt ≈ 1 px per frame at 60 fps
+    const pxPerKt = 0.03 * (dt / 16);            // 20 kt ≈ 0.6 px per frame at 60 fps (Windfinder-ish pace)
     if (moving) { ctx.clearRect(0, 0, W, H); }
-    else { ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = 'rgba(0,0,0,0.87)'; ctx.fillRect(0, 0, W, H); ctx.globalCompositeOperation = 'source-over'; }
+    else { ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = 'rgba(0,0,0,0.84)'; ctx.fillRect(0, 0, W, H); ctx.globalCompositeOperation = 'source-over'; }
     ctx.lineCap = 'round';
     const byColor = new Map();
     for (const p of particles) {
       const s = sample(p.lng, p.lat);
       if (!s || p.age++ > p.life) { spawn(p, b); continue; }
       const nlng = p.lng + s[0] * pxPerKt * degPerPxX, nlat = p.lat + s[1] * pxPerKt * degPerPxY;
-      const a = map.project([p.lng, p.lat]), c = map.project([nlng, nlat]);
+      p.h.push(p.lng, p.lat); if (p.h.length > HIST * 2) p.h.splice(0, 2);
       p.lng = nlng; p.lat = nlat;
-      if (a.x < -20 || a.y < -20 || a.x > W / dpr + 20 || a.y > H / dpr + 20) { spawn(p, b); continue; }
+      const c = map.project([nlng, nlat]);
+      if (c.x < -20 || c.y < -20 || c.x > W / dpr + 20 || c.y > H / dpr + 20) { spawn(p, b); continue; }
+      // streak length grows with speed: 2 history points at calm, the full buffer at 35 kt+
+      const n = Math.min(p.h.length / 2, 2 + Math.round(Math.min(s[2], 35) / 35 * (HIST - 2)));
       const col = color(s[2]); let list = byColor.get(col); if (!list) { list = []; byColor.set(col, list); }
-      list.push(a.x * dpr, a.y * dpr, c.x * dpr, c.y * dpr, s[2]);
+      const seg = [c.x * dpr, c.y * dpr]; for (let k = 1; k <= n; k++) { const idx = p.h.length - 2 * k; const q = map.project([p.h[idx], p.h[idx + 1]]); seg.push(q.x * dpr, q.y * dpr); }
+      list.push({ seg, kt: s[2] });
     }
     for (const [col, list] of byColor) {
       ctx.strokeStyle = col; ctx.beginPath();
-      for (let i = 0; i < list.length; i += 5) { ctx.moveTo(list[i], list[i + 1]); ctx.lineTo(list[i + 2], list[i + 3]); }
-      ctx.lineWidth = (1.0 + Math.min(list[4] || 0, 40) / 32) * dpr; ctx.globalAlpha = 0.8; ctx.stroke();
+      for (const { seg } of list) { ctx.moveTo(seg[0], seg[1]); for (let k = 2; k < seg.length; k += 2) ctx.lineTo(seg[k], seg[k + 1]); }
+      ctx.lineWidth = (0.9 + Math.min(list[0].kt, 40) / 36) * dpr; ctx.globalAlpha = 0.75; ctx.stroke();
     }
     ctx.globalAlpha = 1;
     raf = requestAnimationFrame(frame);
@@ -81,6 +113,6 @@ const WindLayer = (() => {
     off() { this.wanted = false; this.stop(); field = null; ctx.clearRect(0, 0, W, H); },
     pause(p) { paused = p; },
     sampleAt(lng, lat) { return sample(lng, lat); },
-    color, RAMP
+    heatImage, colorSmooth, color, RAMP
   };
 })();
