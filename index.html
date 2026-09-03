@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0F1418">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Radar Route</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/5.24.0/maplibre-gl.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/5.24.0/maplibre-gl.min.js"></script>
+<script>
+  if (typeof maplibregl === 'undefined') {
+    document.write('<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css">');
+    document.write('<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js"><\/script>');
+  }
+</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="map"></div>
+<div id="flash" class="flash" hidden></div>
+
+<!-- top: route summary pill -->
+<button class="pill" id="routePill" aria-label="Route">
+  <span class="pill-ic">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#7CCBEA" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="3" fill="rgba(124,203,234,0.35)"></circle><circle cx="18" cy="6" r="3" fill="rgba(124,203,234,0.35)"></circle><path d="M8.2 15.8 C 11 12.5 13 11.5 15.8 8.2"></path></svg>
+  </span>
+  <span class="pill-txt">
+    <b id="pillTitle">Set a route</b>
+    <small id="pillSub">Driving, hike or bike · storms and alerts on the way</small>
+  </span>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8B98A3" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 6.5 L15 12 L9.5 17.5"></path></svg>
+</button>
+
+<!-- left: style + compass -->
+<div class="lcol">
+  <button class="rbtn" id="styleBtn" title="Map style">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#C9D3DC" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6.5 L9 4 L15 6.5 L20.5 4 L20.5 17.5 L15 20 L9 17.5 L3.5 20 Z" fill="rgba(201,211,220,0.16)"></path><path d="M9 4 L9 17.5 M15 6.5 L15 20"></path></svg>
+  </button>
+  <button class="rbtn" id="northBtn" title="Reset north">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#C9D3DC" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5" fill="rgba(201,211,220,0.12)"></circle><path d="M15.2 8.8 L13.4 13.4 L8.8 15.2 L10.6 10.6 Z" fill="#E77B74" stroke="none"></path></svg>
+  </button>
+</div>
+
+<!-- banner for alerts at my location -->
+<div class="banner" id="banner" hidden><b id="bannerTitle"></b><span id="bannerSub"></span><button id="bannerClose" aria-label="Dismiss">×</button></div>
+
+<!-- legend -->
+<div class="legend" id="legend">
+  <div class="bar"></div>
+  <div class="lbl"><span>20</span><span>35</span><span>50</span><span>65 dBZ</span></div>
+</div>
+
+<!-- scrub card -->
+<div class="scrub" id="scrub">
+  <div class="r1">
+    <button class="play" id="play" aria-label="Play or pause"><svg width="18" height="18" viewBox="0 0 24 24" fill="#0B1014" stroke="#0B1014" stroke-width="2" stroke-linejoin="round"><path id="playIcon" d="M8 5.5 L18 12 L8 18.5 Z"></path></svg></button>
+    <div class="clockwrap">
+      <div class="clock"><b id="frameTime">--:--</b><span id="tz"></span><span class="live" id="liveBadge" hidden><i></i>LIVE</span></div>
+      <div class="sub" id="frameSub">MRMS composite · loading…</div>
+    </div>
+    <select id="loopSel" aria-label="Loop length">
+      <option value="60,5">1 h</option>
+      <option value="120,10" selected>2 h</option>
+      <option value="360,10">6 h</option>
+      <option value="720,10">12 h</option>
+    </select>
+  </div>
+  <input type="range" id="scrubber" min="0" max="0" value="0" aria-label="Radar frame">
+  <div class="ticks" id="loopTicks"></div>
+</div>
+
+<!-- bottom nav -->
+<nav class="nav">
+  <button class="nb" id="nbRoute" data-sheet="route"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="3" fill="currentColor" fill-opacity="0.35"></circle><circle cx="18" cy="6" r="3" fill="currentColor" fill-opacity="0.35"></circle><path d="M8.2 15.8 C 11 12.5 13 11.5 15.8 8.2"></path></svg><span>ROUTE</span></button>
+  <button class="nb" id="nbAlerts" data-sheet="alerts"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#F2B85A" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.6 4.6 C 11.2 3.5 12.8 3.5 13.4 4.6 L 20.6 17.4 C 21.2 18.5 20.4 19.8 19.2 19.8 L 4.8 19.8 C 3.6 19.8 2.8 18.5 3.4 17.4 Z" fill="rgba(255,165,0,0.22)"></path><path d="M12 9.5 L12 13.5"></path><circle cx="12" cy="16.6" r="0.9" fill="#F2B85A" stroke="none"></circle></svg><span>ALERTS</span><em class="badge" id="alertBadge" hidden>0</em></button>
+  <button class="nb" id="nbLayers" data-sheet="layers"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 L20 7.5 L12 11.5 L4 7.5 Z" fill="currentColor" fill-opacity="0.28"></path><path d="M4.5 12.2 L12 16 L19.5 12.2"></path><path d="M4.5 16.7 L12 20.5 L19.5 16.7" opacity="0.55"></path></svg><span>LAYERS</span></button>
+  <button class="nb" id="nbLocate"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="6.5" fill="currentColor" fill-opacity="0.14"></circle><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"></circle><path d="M12 2.5 L12 5 M12 19 L12 21.5 M2.5 12 L5 12 M19 12 L21.5 12"></path></svg><span>LOCATE</span></button>
+</nav>
+
+<!-- ===== sheets ===== -->
+<div class="scrim" id="scrim" hidden></div>
+
+<section class="sheet" id="sheet-route" hidden>
+  <header><h2>Route</h2><button class="x" data-close aria-label="Close">×</button></header>
+  <div class="body">
+    <div class="hint" id="routeHint">Type places, use GPS, or tap the map twice (origin, then destination).</div>
+    <label class="f">From <span class="row"><input type="text" id="fromTxt" placeholder="address, place or lat,lon"><button class="mini" id="useLoc">GPS</button><button class="mini" id="pickFrom" title="Tap on map">MAP</button></span></label>
+    <label class="f">To <span class="row"><input type="text" id="toTxt" placeholder="e.g. Amarillo, TX"><button class="mini" id="pickTo" title="Tap on map">MAP</button></span></label>
+    <div class="seg" id="modeSeg">
+      <button data-mode="osrm" class="on">Drive</button><button data-mode="drive">Drive · Google</button><button data-mode="line">Hike / bike</button>
+    </div>
+    <div class="grid2">
+      <label class="f">Pace <span class="row"><input type="number" id="pace" value="5" min="1" step="0.5"><span class="unit">km/h</span></span></label>
+      <label class="f">Ticks every <span class="row"><input type="number" id="tickMin" value="30" min="5" step="5"><span class="unit">min</span></span></label>
+    </div>
+    <label class="f" id="gkeyRow">Google API key <span class="row"><input type="text" id="gkey" placeholder="only for Drive · Google"></span></label>
+    <div class="btns"><button class="primary" id="routeGo">Build route</button><button id="routeSave">Save</button><button id="routeClear">Clear</button></div>
+    <h3>Saved routes</h3>
+    <ul class="list" id="savedRoutes"><li class="empty">Nothing saved yet — build a route and tap Save.</li></ul>
+    <h3>Places</h3>
+    <div class="btns"><button id="placeAddGPS">Add my location</button><button id="placeAddCenter">Add map centre</button></div>
+    <ul class="list" id="places"><li class="empty">Home, trailhead, the field site — tap to jump there.</li></ul>
+  </div>
+</section>
+
+<section class="sheet" id="sheet-alerts" hidden>
+  <header><h2>Alerts</h2><button class="x" data-close aria-label="Close">×</button></header>
+  <div class="body">
+    <label class="tog"><input type="checkbox" id="soundOn" checked><span>Sound and flash when a new warning covers my location</span></label>
+    <div class="btns"><button id="testSound">Test sound</button></div>
+    <div class="hint" id="alertsHere">Location unknown — tap LOCATE to start GPS.</div>
+    <h3>Warnings in view</h3>
+    <ul class="list" id="alertList"><li class="empty">Loading…</li></ul>
+  </div>
+</section>
+
+<section class="sheet" id="sheet-layers" hidden>
+  <header><h2>Layers</h2><button class="x" data-close aria-label="Close">×</button></header>
+  <div class="body">
+    <div class="chips" id="chips">
+      <button class="chip on" data-layer="radar"><i></i>RADAR</button>
+      <button class="chip on" data-layer="alerts"><i></i>ALERTS</button>
+      <button class="chip on" data-layer="storms"><i></i>STORMS</button>
+      <button class="chip" data-layer="wind"><i></i>WIND</button>
+      <button class="chip" data-layer="metar"><i></i>METAR</button>
+      <button class="chip" data-layer="terrain"><i></i>RELIEF</button>
+    </div>
+    <div class="grid2">
+      <label class="f">Storm cones <select id="coneMode"><option value="group">Grouped (fronts)</option><option value="edge">Radar edges (pixels)</option><option value="both">Grouped + edges</option><option value="each">Every cell</option><option value="none">Off</option></select></label>
+      <label class="f">Min ProbSevere <span class="row"><input type="range" id="minProb" min="0" max="80" value="10" step="5"><span class="unit" id="minProbV">10%</span></span></label>
+    </div>
+    <h3>Map</h3>
+    <div class="grid2">
+      <label class="f">Base style <select id="styleSel"><option value="dark">Dark</option><option value="fiord">Fiord</option><option value="positron">Light</option><option value="liberty">Liberty (detail)</option><option value="bright">Bright (detail)</option></select></label>
+      <label class="f">Overlay <select id="overlaySel"><option value="none">None</option><option value="topo">OpenTopoMap</option><option value="osm">OSM streets</option><option value="sat">Esri satellite</option></select></label>
+      <label class="f">Overlay opacity <span class="row"><input type="range" id="overlayOp" min="0" max="100" value="75"><span class="unit" id="overlayOpV">75%</span></span></label>
+      <label class="f">Relief strength <span class="row"><input type="range" id="hsStrength" min="10" max="100" value="60"><span class="unit" id="hsStrengthV">60%</span></span></label>
+    </div>
+    <h3>Data sources <button class="mini" id="retest">Retest</button></h3>
+    <div class="rows" id="rows"></div>
+  </div>
+</section>
+
+<script src="tracker.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
