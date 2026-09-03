@@ -12,6 +12,7 @@ fetches every layer straight from public endpoints.
 | `styles.css` | Mobile-first styling (Pixel 10 layout; wide screens get a side panel) |
 | `app.js` | All layers, routing, alerts, saved routes/places, diagnostics |
 | `tracker.js` | Radar edge tracker — reads radar tiles, estimates motion, draws leading-edge cones |
+| `wind.js` | Particle wind renderer — canvas over the map, particles advected through the interpolated grid |
 | `sw.js` | Service worker — caches the app shell and the map library (never weather data) |
 | `manifest.webmanifest`, `icons/` | PWA install metadata |
 
@@ -46,7 +47,7 @@ Netlify Drop and Cloudflare Pages work the same way (drag the folder in).
 | Storm objects | NOAA ProbSevere v3 via the `noaa-mrms-pds` S3 bucket | polygons + motion; grouped into line cones |
 | Radar edges | `tracker.js` on the IEM tiles | needs CORS-readable tiles (the Data sources row says) |
 | Alerts | `api.weather.gov/alerts/active` | polygon alerts drawn; zone-based products counted but not drawn yet |
-| Wind field | Open-Meteo, 8×8 grid over the viewport | 10 m wind and gust, knots |
+| Wind field | Open-Meteo hourly, 14×12 grid around the viewport (`wind.js`) | animated particles, now to +6 h on the WIND slider; tap the map for a reading |
 | METAR | Aviation Weather Center → IEM ASOS fallback | station/dir/speed labels |
 | Routes | OSRM demo (no key), Google Routes (key), straight line | ticks every N minutes along the route |
 | Point forecast | `api.weather.gov` hourly | tap a route tick |

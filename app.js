@@ -67,7 +67,8 @@ function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '
 /* ---------- map ---------- */
 let mapLoaded = false;
 const lastView = store.get('view', null);
-const map = new maplibregl.Map({ container: 'map', style: STYLE_BASE + settings.style, center: lastView ? lastView.c : [-103.4, 38.6], zoom: lastView ? lastView.z : 6.2, attributionControl: { compact: true }, pitchWithRotate: false });
+const map = new maplibregl.Map({ container: 'map', style: STYLE_BASE + settings.style, center: lastView ? lastView.c : [-103.4, 38.6], zoom: lastView ? lastView.z : 6.2, attributionControl: false, pitchWithRotate: false });
+map.addControl(new maplibregl.AttributionControl({ compact: true }), 'top-left');
 map.on('moveend', () => store.set('view', { c: [map.getCenter().lng, map.getCenter().lat], z: map.getZoom() }));
 const dBase = src('Basemap', 'OpenFreeMap vector tiles'); dBase.start();
 map.on('load', () => { mapLoaded = true; dBase.ok('style loaded', settings.style); buildAll(); });
@@ -79,7 +80,7 @@ map.on('error', (e) => {
   else if (!sid && !mapLoaded) dBase.fail(new Error(m));
 });
 $('#northBtn').onclick = () => map.resetNorthPitch({ duration: 400 });
-const OVERLAY_IDS = new Set(['hillshade', 'overlay', 'alerts-fill', 'alerts-line', 'cone-fill', 'cone-line', 'contour-line', 'contour-label', 'ps-outline', 'ps-vector', 'edge-fill', 'edge-line', 'edge-contour', 'edge-label', 'edge-outline', 'wind-line', 'wind-head', 'metar-pt', 'metar-lbl', 'route-casing', 'route-line', 'tick-pt', 'tick-lbl', 'places-pt', 'places-lbl', 'me-halo', 'me-pt']);
+const OVERLAY_IDS = new Set(['hillshade', 'overlay', 'alerts-fill', 'alerts-line', 'cone-fill', 'cone-line', 'contour-line', 'contour-label', 'ps-outline', 'ps-vector', 'edge-fill', 'edge-line', 'edge-contour', 'edge-label', 'edge-outline', 'metar-pt', 'metar-lbl', 'route-casing', 'route-line', 'tick-pt', 'tick-lbl', 'places-pt', 'places-lbl', 'me-halo', 'me-pt']);
 function anchorBelowRoads(exclude) { const l = map.getStyle().layers.find(l => !exclude.includes(l.id) && (l.id.startsWith('radar-') || OVERLAY_IDS.has(l.id) || l.type === 'line' || l.type === 'symbol')); return l ? l.id : undefined; }
 function setVis(ids, on) { ids.forEach(id => { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none'); }); }
 const overlayBuilders = [];
@@ -98,11 +99,11 @@ let openSheet = null;
 function showSheet(name) {
   closeSheet();
   if (!name) return;
-  openSheet = name; $('#sheet-' + name).hidden = false; $('#scrim').hidden = false;
+  openSheet = name; $('#sheet-' + name).hidden = false; $('#scrim').hidden = false; WindLayer.pause(true);
   $$('.nb[data-sheet]').forEach(b => b.classList.toggle('on', b.dataset.sheet === name));
   if (name === 'alerts') renderAlertList();
 }
-function closeSheet() { if (!openSheet) return; $('#sheet-' + openSheet).hidden = true; $('#scrim').hidden = true; openSheet = null; $$('.nb[data-sheet]').forEach(b => b.classList.remove('on')); }
+function closeSheet() { if (!openSheet) return; $('#sheet-' + openSheet).hidden = true; $('#scrim').hidden = true; openSheet = null; WindLayer.pause(false); $$('.nb[data-sheet]').forEach(b => b.classList.remove('on')); }
 $$('.nb[data-sheet]').forEach(b => b.onclick = () => openSheet === b.dataset.sheet ? closeSheet() : showSheet(b.dataset.sheet));
 $$('[data-close]').forEach(b => b.onclick = closeSheet);
 $('#scrim').onclick = closeSheet;
@@ -115,7 +116,7 @@ function applyLayerState(k) {
   if (k === 'radar') { radarFrames.forEach(f => setVis([f.layer], on)); if (on) showFrame(curFrame); }
   if (k === 'alerts') setVis(['alerts-fill', 'alerts-line'], on);
   if (k === 'storms') setVis(['cone-fill', 'cone-line', 'contour-line', 'contour-label', 'ps-outline', 'ps-vector', 'edge-fill', 'edge-line', 'edge-contour', 'edge-label', 'edge-outline'], on);
-  if (k === 'wind') { setVis(['wind-line', 'wind-head'], on); if (on) loadWind(); }
+  if (k === 'wind') setWindOn(on);
   if (k === 'metar') { setVis(['metar-pt', 'metar-lbl'], on); if (on) loadMetar(); }
   if (k === 'terrain') toggleTerrain(on);
 }
@@ -400,39 +401,61 @@ map.on('moveend', () => { if (['edge', 'both'].includes(settings.coneMode)) { cl
 /* ============================================================
    WIND + METAR
    ============================================================ */
-const dWind = src('Wind field', 'Open-Meteo 10 m wind, viewport grid');
-let windGeo = fc(), windHeadGeo = fc(), windTimer = null;
-function ensureWindLayers() {
-  if (!map.getSource('wind')) map.addSource('wind', { type: 'geojson', data: windGeo });
-  if (!map.getSource('wind-head')) map.addSource('wind-head', { type: 'geojson', data: windHeadGeo });
-  const vis = settings.layers.wind ? 'visible' : 'none';
-  if (!map.getLayer('wind-line')) map.addLayer({ id: 'wind-line', type: 'line', source: 'wind', layout: { 'line-cap': 'round', visibility: vis }, paint: { 'line-color': ['get', 'color'], 'line-width': ['get', 'w'], 'line-opacity': 0.85 } });
-  if (!map.getLayer('wind-head')) map.addLayer({ id: 'wind-head', type: 'fill', source: 'wind-head', layout: { visibility: vis }, paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.85 } });
+const dWind = src('Wind field', 'Open-Meteo hourly 10 m wind → particles');
+let windField = null, windFetching = false, windTimer = null, windHour = 0;
+WindLayer.init(map, $('#windCanvas'));
+function windExtent() { const b = map.getBounds(); const cx = (b.getWest() + b.getEast()) / 2, cy = (b.getSouth() + b.getNorth()) / 2, hw = (b.getEast() - b.getWest()) * 0.75, hh = (b.getNorth() - b.getSouth()) * 0.75; return { w: cx - hw, e: cx + hw, s: Math.max(-85, cy - hh), n: Math.min(85, cy + hh) }; }
+function viewInside(f) { const b = map.getBounds(); return b.getWest() >= f.w && b.getEast() <= f.e && b.getSouth() >= f.s && b.getNorth() <= f.n; }
+async function fetchJSONRetry(url, tries) {
+  for (let k = 0; ; k++) {
+    try { const r = await fetch(url); const txt = await r.text(); let j; try { j = JSON.parse(txt); } catch (pe) { throw new Error(`HTTP ${r.status}, non-JSON: "${txt.slice(0, 100)}"`); } if (j && j.error) throw new Error(j.reason || 'API error'); if (!r.ok) throw new Error(`HTTP ${r.status}`); return j; }
+    catch (e) { if (k >= tries) throw e; await new Promise(res => setTimeout(res, 1500 * (k + 1))); }
+  }
 }
-overlayBuilders.push(ensureWindLayers);
-function windColor(kt) { return kt < 22 ? '#9FC3D6' : kt < 32 ? '#E9D48A' : '#F0A35A'; }
-function arrowFeatures(lng, lat, spdKt, dirFromDeg, gust) {
-  const toDeg = (dirFromDeg + 180) * Math.PI / 180; const b = map.getBounds(); const spanLng = b.getEast() - b.getWest();
-  const L = spanLng * (0.008 + Math.min(spdKt, 45) * 0.0006); const ux = Math.sin(toDeg), uy = Math.cos(toDeg); const cosl = Math.cos(lat * Math.PI / 180);
-  const x2 = lng + ux * L / cosl, y2 = lat + uy * L; const hl = L * 0.24, hw = L * 0.09;
-  const head = [[x2, y2], [x2 - (ux * hl + -uy * hw) / cosl, y2 - (uy * hl + ux * hw)], [x2 - (ux * hl - -uy * hw) / cosl, y2 - (uy * hl - ux * hw)], [x2, y2]];
-  const props = { color: windColor(spdKt), w: 0.8 + spdKt / 30, kt: spdKt, gust, dir: dirFromDeg };
-  return [{ type: 'Feature', geometry: { type: 'LineString', coordinates: [[lng, lat], [x2, y2]] }, properties: props }, { type: 'Feature', geometry: { type: 'Polygon', coordinates: [head] }, properties: props }];
-}
-async function loadWind() {
-  dWind.start(); const b = map.getBounds(); const nx = 8, ny = 8; const lats = [], lngs = [];
-  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) { lats.push((b.getSouth() + (b.getNorth() - b.getSouth()) * (j + 0.5) / ny).toFixed(3)); lngs.push((b.getWest() + (b.getEast() - b.getWest()) * (i + 0.5) / nx).toFixed(3)); }
+async function loadWind(force) {
+  if (!settings.layers.wind || !mapLoaded) return;
+  if (!force && windField && viewInside(windField) && Date.now() - windField.at < 30 * 60000) return;
+  if (windFetching) return; windFetching = true; dWind.start('fetching wind grid…');
+  const ext = windExtent(); const nx = 14, ny = 12; const lats = [], lngs = [];
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) { lats.push((ext.s + (ext.n - ext.s) * j / (ny - 1)).toFixed(3)); lngs.push((ext.w + (ext.e - ext.w) * i / (nx - 1)).toFixed(3)); }
   try {
-    const r = await fetch(`${OM}?latitude=${lats.join(',')}&longitude=${lngs.join(',')}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=kn`); const txt = await r.text();
-    let j; try { j = JSON.parse(txt); } catch (pe) { throw new Error(`HTTP ${r.status}, non-JSON: "${txt.slice(0, 120)}"`); }
-    if (j && j.error) throw new Error(`Open-Meteo: ${j.reason}`);
-    const arr = Array.isArray(j) ? j : [j]; const lines = [], heads = []; let maxKt = 0;
-    arr.forEach((rr, k) => { const c = rr.current; if (!c) return; maxKt = Math.max(maxKt, c.wind_speed_10m); const [ln, hd] = arrowFeatures(+lngs[k], +lats[k], c.wind_speed_10m, c.wind_direction_10m, c.wind_gusts_10m); lines.push(ln); heads.push(hd); });
-    windGeo = fc(lines); windHeadGeo = fc(heads); ensureWindLayers(); map.getSource('wind').setData(windGeo); map.getSource('wind-head').setData(windHeadGeo);
-    dWind.ok(`${arr.length} points · max ${maxKt} kt`);
+    const CH = 42, chunks = []; for (let k = 0; k < lats.length; k += CH) chunks.push([lats.slice(k, k + CH), lngs.slice(k, k + CH)]);
+    const results = await Promise.all(chunks.map(([la, lo]) => fetchJSONRetry(`${OM}?latitude=${la.join(',')}&longitude=${lo.join(',')}&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&forecast_hours=8&wind_speed_unit=kn&timezone=UTC`, 1)));
+    const pts = results.flatMap(r => Array.isArray(r) ? r : [r]);
+    if (pts.length !== lats.length) throw new Error(`expected ${lats.length} points, got ${pts.length}`);
+    // hour 0 = the hour containing "now"
+    const t0 = pts[0].hourly.time; const nowMs = Date.now(); let i0 = 0; for (let k = 0; k < t0.length; k++) if (Date.parse(t0[k] + 'Z') <= nowMs) i0 = k;
+    const NH = Math.min(7, t0.length - i0); const hours = [];
+    for (let h = 0; h < NH; h++) {
+      const u = new Float32Array(pts.length), v = new Float32Array(pts.length), spd = new Float32Array(pts.length), gust = new Float32Array(pts.length);
+      pts.forEach((pt, k) => { const hh = pt.hourly; const sp = hh.wind_speed_10m[i0 + h] || 0, dir = (hh.wind_direction_10m[i0 + h] || 0) * Math.PI / 180; u[k] = -sp * Math.sin(dir); v[k] = -sp * Math.cos(dir); spd[k] = sp; gust[k] = hh.wind_gusts_10m[i0 + h] || 0; });
+      hours.push({ u, v, spd, gust, time: Date.parse(t0[i0 + h] + 'Z') });
+    }
+    windField = Object.assign({ nx, ny, hours, at: Date.now() }, ext);
+    WindLayer.setField(windField); windHour = Math.min(windHour, hours.length - 1); $('#windHour').max = hours.length - 1; $('#windHour').value = windHour; WindLayer.setHour(windHour); updateWindLabel(); WindLayer.start();
+    const mx = Math.max(...hours[0].spd), mg = Math.max(...hours[0].gust);
+    dWind.ok(`${pts.length}-point grid · ${hours.length} h · now max ${Math.round(mx)} kt, gust ${Math.round(mg)}`, `${chunks.length} requests · refreshes when you leave the area or after 30 min`);
   } catch (e) { dWind.fail(e); }
+  windFetching = false;
 }
-map.on('click', 'wind-line', (e) => { const p = e.features[0].properties; new maplibregl.Popup().setLngLat(e.lngLat).setHTML(`<div class="pp"><b>${p.kt} kt</b> from ${p.dir}°<div class="k">gust ${p.gust} kt · Open-Meteo 10 m</div></div>`).addTo(map); });
+function updateWindLabel() {
+  const h = windField && windField.hours[windHour]; if (!h) { $('#windHourV').textContent = 'now'; return; }
+  const t = new Date(h.time); $('#windHourV').textContent = (windHour === 0 ? 'now' : `+${windHour} h`) + ' · ' + fmtLocal(t);
+}
+$('#windHour').oninput = (e) => { windHour = Number(e.target.value); WindLayer.setHour(windHour); updateWindLabel(); };
+function setWindOn(on) {
+  $('#windRow').hidden = !on; $('#windLegend').hidden = !on;
+  if (on) { if (windField) { WindLayer.setField(windField); WindLayer.start(); } loadWind(!windField); }
+  else { WindLayer.off(); windField = null; dWind.note('off'); }
+}
+map.on('click', (e) => {
+  if (!settings.layers.wind || pickTarget != null) return;
+  const hits = map.queryRenderedFeatures(e.point, { layers: ['alerts-fill', 'cone-fill', 'edge-fill', 'metar-pt', 'tick-pt', 'places-pt'].filter(id => map.getLayer(id)) });
+  if (hits.length) return;
+  const sm = WindLayer.sampleAt(e.lngLat.lng, e.lngLat.lat); if (!sm) return;
+  const dirFrom = (Math.atan2(-sm[0], -sm[1]) * 180 / Math.PI + 360) % 360;
+  new maplibregl.Popup().setLngLat(e.lngLat).setHTML(`<div class="pp"><b>${Math.round(sm[2])} kt</b> from ${Math.round(dirFrom)}°<div class="k">10 m wind · ${$('#windHourV').textContent} · Open-Meteo</div></div>`).addTo(map);
+});
 
 const dMetar = src('METAR', 'AWC bbox → IEM ASOS fallback');
 let metarGeo = fc(), metarTimer = null;
@@ -459,7 +482,7 @@ async function loadMetar() {
   metarGeo = fc(feats); ensureMetarLayers(); map.getSource('metar').setData(metarGeo); dMetar.ok(`${feats.length} stations`, via);
 }
 map.on('click', 'metar-pt', (e) => { const p = e.features[0].properties; new maplibregl.Popup().setLngLat(e.lngLat).setHTML(`<div class="pp"><b>${esc(p.id)}</b> <span class="k">${esc(p.name)}</span><div style="margin-top:6px;font-family:var(--mono);font-size:11px">${esc(p.raw)}</div></div>`).addTo(map); });
-map.on('moveend', () => { if (settings.layers.wind) { clearTimeout(windTimer); windTimer = setTimeout(loadWind, 800); } if (settings.layers.metar) { clearTimeout(metarTimer); metarTimer = setTimeout(loadMetar, 800); } });
+map.on('moveend', () => { if (settings.layers.wind) { clearTimeout(windTimer); windTimer = setTimeout(() => loadWind(false), 1200); } if (settings.layers.metar) { clearTimeout(metarTimer); metarTimer = setTimeout(loadMetar, 800); } });
 
 /* ============================================================
    OVERLAY + RELIEF

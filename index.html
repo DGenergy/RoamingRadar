@@ -24,6 +24,7 @@
 </head>
 <body>
 <div id="map"></div>
+<canvas id="windCanvas" aria-hidden="true"></canvas>
 <div id="flash" class="flash" hidden></div>
 
 <!-- top: route summary pill -->
@@ -55,6 +56,7 @@
 <div class="legend" id="legend">
   <div class="bar"></div>
   <div class="lbl"><span>20</span><span>35</span><span>50</span><span>65 dBZ</span></div>
+  <div class="wbar" id="windLegend" hidden><div class="bar wind"></div><div class="lbl"><span>0</span><span>10</span><span>20</span><span>30</span><span>40 kt</span></div></div>
 </div>
 
 <!-- scrub card -->
@@ -74,6 +76,11 @@
   </div>
   <input type="range" id="scrubber" min="0" max="0" value="0" aria-label="Radar frame">
   <div class="ticks" id="loopTicks"></div>
+  <div class="windrow" id="windRow" hidden>
+    <span class="wlabel">WIND</span>
+    <input type="range" id="windHour" min="0" max="6" value="0" aria-label="Wind forecast hour">
+    <span class="wval" id="windHourV">now</span>
+  </div>
 </div>
 
 <!-- bottom nav -->
@@ -149,6 +156,7 @@
 </section>
 
 <script src="tracker.js"></script>
+<script src="wind.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
