@@ -402,14 +402,14 @@ map.on('moveend', () => { if (['edge', 'both'].includes(settings.coneMode)) { cl
    WIND + METAR
    ============================================================ */
 const dWind = src('Wind field', 'Open-Meteo hourly 10 m wind → particles');
-let windField = null, windFetching = false, windTimer = null, windHour = 0;
+let windField = null, windFetching = false, windTimer = null, windHour = 0, windRetry = null;
 WindLayer.init(map, $('#windCanvas'));
 function windExtent() { const b = map.getBounds(); const cx = (b.getWest() + b.getEast()) / 2, cy = (b.getSouth() + b.getNorth()) / 2, hw = (b.getEast() - b.getWest()) * 0.75, hh = (b.getNorth() - b.getSouth()) * 0.75; return { w: cx - hw, e: cx + hw, s: Math.max(-85, cy - hh), n: Math.min(85, cy + hh) }; }
 function viewInside(f) { const b = map.getBounds(); return b.getWest() >= f.w && b.getEast() <= f.e && b.getSouth() >= f.s && b.getNorth() <= f.n; }
 async function fetchJSONRetry(url, tries) {
   for (let k = 0; ; k++) {
-    try { const r = await fetch(url); const txt = await r.text(); let j; try { j = JSON.parse(txt); } catch (pe) { throw new Error(`HTTP ${r.status}, non-JSON: "${txt.slice(0, 100)}"`); } if (j && j.error) throw new Error(j.reason || 'API error'); if (!r.ok) throw new Error(`HTTP ${r.status}`); return j; }
-    catch (e) { if (k >= tries) throw e; await new Promise(res => setTimeout(res, 1500 * (k + 1))); }
+    try { const r = await fetch(url); const txt = await r.text(); let j; try { j = JSON.parse(txt); } catch (pe) { throw new Error(`Open-Meteo replied ${r.status} with "${txt.trim().slice(0, 160)}" — provider-side outage, retrying`); } if (j && j.error) throw new Error('Open-Meteo: ' + (j.reason || 'API error')); if (!r.ok) throw new Error(`HTTP ${r.status}`); return j; }
+    catch (e) { if (k >= tries) throw e; dWind.note(`${e.message} (${k + 1}/${tries})`); await new Promise(res => setTimeout(res, 2000 * Math.pow(2, k))); }
   }
 }
 async function loadWind(force) {
@@ -420,7 +420,8 @@ async function loadWind(force) {
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) { lats.push((ext.s + (ext.n - ext.s) * j / (ny - 1)).toFixed(3)); lngs.push((ext.w + (ext.e - ext.w) * i / (nx - 1)).toFixed(3)); }
   try {
     const CH = 42, chunks = []; for (let k = 0; k < lats.length; k += CH) chunks.push([lats.slice(k, k + CH), lngs.slice(k, k + CH)]);
-    const results = await Promise.all(chunks.map(([la, lo]) => fetchJSONRetry(`${OM}?latitude=${la.join(',')}&longitude=${lo.join(',')}&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&forecast_hours=8&wind_speed_unit=kn&timezone=UTC`, 1)));
+    const results = [];
+    for (const [la, lo] of chunks) results.push(await fetchJSONRetry(`${OM}?latitude=${la.join(',')}&longitude=${lo.join(',')}&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&forecast_hours=8&wind_speed_unit=kn&timezone=UTC`, 3));
     const pts = results.flatMap(r => Array.isArray(r) ? r : [r]);
     if (pts.length !== lats.length) throw new Error(`expected ${lats.length} points, got ${pts.length}`);
     // hour 0 = the hour containing "now"
@@ -435,7 +436,7 @@ async function loadWind(force) {
     WindLayer.setField(windField); windHour = Math.min(windHour, hours.length - 1); $('#windHour').max = hours.length - 1; $('#windHour').value = windHour; WindLayer.setHour(windHour); updateWindLabel(); WindLayer.start();
     const mx = Math.max(...hours[0].spd), mg = Math.max(...hours[0].gust);
     dWind.ok(`${pts.length}-point grid · ${hours.length} h · now max ${Math.round(mx)} kt, gust ${Math.round(mg)}`, `${chunks.length} requests · refreshes when you leave the area or after 30 min`);
-  } catch (e) { dWind.fail(e); }
+  } catch (e) { dWind.fail(e, windField ? 'showing the last good field · retrying in 60 s' : 'retrying in 60 s'); clearTimeout(windRetry); windRetry = setTimeout(() => loadWind(true), 60000); }
   windFetching = false;
 }
 function updateWindLabel() {
@@ -446,7 +447,7 @@ $('#windHour').oninput = (e) => { windHour = Number(e.target.value); WindLayer.s
 function setWindOn(on) {
   $('#windRow').hidden = !on; $('#windLegend').hidden = !on;
   if (on) { if (windField) { WindLayer.setField(windField); WindLayer.start(); } loadWind(!windField); }
-  else { WindLayer.off(); windField = null; dWind.note('off'); }
+  else { WindLayer.off(); windField = null; clearTimeout(windRetry); dWind.note('off'); }
 }
 map.on('click', (e) => {
   if (!settings.layers.wind || pickTarget != null) return;
