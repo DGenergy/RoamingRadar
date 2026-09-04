@@ -9,6 +9,8 @@ const $$ = (s) => Array.from(document.querySelectorAll(s));
 /* ---------- endpoints ---------- */
 const STYLE_BASE = 'https://tiles.openfreemap.org/styles/';
 const IEM_TILES = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/';
+const RAINVIEWER = 'https://api.rainviewer.com/public/weather-maps.json';
+const CONUS = { w: -125.5, e: -66, s: 24, n: 50 };
 const NWS = 'https://api.weather.gov';
 const AWC = 'https://aviationweather.gov/api/data/metar';
 const IEM_CUR = 'https://mesonet.agron.iastate.edu/api/1/currents.json';
@@ -38,7 +40,7 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem('rr.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem('rr.' + k, JSON.stringify(v)); } catch (e) {} }
 };
-const settings = Object.assign({ style: 'dark', overlay: 'none', overlayOp: 75, hs: 60, coneMode: 'group', minProb: 10, loop: '120,10', sound: true, windHeat: true, windHeatOp: 40, layers: { radar: true, alerts: true, storms: true, wind: false, metar: false, terrain: false } }, store.get('settings', {}));
+const settings = Object.assign({ style: 'dark', overlay: 'none', overlayOp: 75, hs: 60, coneMode: 'group', minProb: 10, loop: '120,10', sound: true, windHeat: true, windHeatOp: 40, radarSrc: 'auto', layers: { radar: true, alerts: true, storms: true, wind: false, metar: false, terrain: false } }, store.get('settings', {}));
 function saveSettings() { store.set('settings', settings); }
 
 /* ---------- diagnostics ---------- */
@@ -125,7 +127,7 @@ function applyLayerState(k) {
    RADAR — IEM MRMS composite tiles, one raster source per frame
    ============================================================ */
 let radarFrames = [], curFrame = 0, playing = false, playTimer = null;
-const dRadar = src('MRMS radar', 'IEM tile cache · mrms::lcref');
+const dRadar = src('Radar', 'MRMS via IEM (US) · RainViewer (global)');
 function stampUTC(d) { return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}`; }
 function fmtLocal(d) { return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
 function tzAbbr() { try { return new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(new Date()).find(p => p.type === 'timeZoneName').value; } catch (e) { return ''; } }
@@ -143,36 +145,66 @@ async function findLatestFrame() {
   return null;
 }
 function clearRadar() { radarFrames.forEach(f => { if (map.getLayer(f.layer)) map.removeLayer(f.layer); if (map.getSource(f.source)) map.removeSource(f.source); }); radarFrames = []; radarErr = 0; }
+let radarMode = 'mrms', lastObserved = -1;
+function inConus() { const c = map.getCenter(); return c.lng > CONUS.w && c.lng < CONUS.e && c.lat > CONUS.s && c.lat < CONUS.n; }
+function pickRadarMode() { const p = settings.radarSrc; if (p === 'mrms' || p === 'rv') return p; return inConus() ? 'mrms' : 'rv'; }
+function addRadarFrame(id, tpl, t, attribution, future) {
+  if (map.getSource(id)) return;
+  const beforeId = map.getStyle().layers.find(l => (OVERLAY_IDS.has(l.id) && l.id !== 'hillshade' && l.id !== 'overlay' && l.id !== 'windheat') || (l.type === 'symbol' && !l.id.startsWith('radar-')));
+  map.addSource(id, { type: 'raster', tiles: [tpl], tileSize: 256, maxzoom: 10, attribution });
+  map.addLayer({ id, type: 'raster', source: id, layout: { visibility: settings.layers.radar ? 'visible' : 'none' }, paint: { 'raster-opacity': 0, 'raster-opacity-transition': { duration: 0 }, 'raster-resampling': 'nearest' } }, beforeId ? beforeId.id : undefined);
+  radarFrames.push({ t, tpl, source: id, layer: id, future: !!future });
+}
+function finishRadar(sub, ticks) {
+  placeWindHeat();
+  $('#scrubber').max = radarFrames.length - 1;
+  const lt = $('#loopTicks'); lt.innerHTML = ''; ticks.forEach(txt => { const sp = document.createElement('span'); sp.textContent = txt; lt.appendChild(sp); });
+  showFrame(lastObserved);
+  $('#frameSub').textContent = sub;
+  if (['edge', 'both'].includes(settings.coneMode)) runEdgeTracker();
+}
 async function buildRadar() {
-  dRadar.start('probing latest frame…'); clearRadar();
+  clearRadar(); radarMode = pickRadarMode();
+  if (radarMode === 'rv') return buildRadarRV();
+  dRadar.start('probing latest MRMS frame…');
   const latest = await findLatestFrame();
   if (!latest) { dRadar.fail(new Error('no recent mrms::lcref tile answered')); $('#frameSub').textContent = 'MRMS via IEM · no frames'; return; }
   const [spanMin, stepMin] = settings.loop.split(',').map(Number); const n = Math.floor(spanMin / stepMin) + 1;
-  const beforeId = map.getStyle().layers.find(l => (OVERLAY_IDS.has(l.id) && l.id !== 'hillshade' && l.id !== 'overlay' && l.id !== 'windheat') || (l.type === 'symbol' && !l.id.startsWith('radar-')));
-  for (let i = n - 1; i >= 0; i--) {
-    const t = new Date(latest.t.getTime() - i * stepMin * 60000); const id = `radar-${stampUTC(t)}`;
-    if (map.getSource(id)) continue;
-    map.addSource(id, { type: 'raster', tiles: [radarTpl(t)], tileSize: 256, maxzoom: 10, attribution: 'MRMS © NOAA via IEM' });
-    map.addLayer({ id, type: 'raster', source: id, layout: { visibility: settings.layers.radar ? 'visible' : 'none' }, paint: { 'raster-opacity': 0, 'raster-opacity-transition': { duration: 0 }, 'raster-resampling': 'nearest' } }, beforeId ? beforeId.id : undefined);
-    radarFrames.push({ t, source: id, layer: id });
-  }
-  placeWindHeat();
-  $('#scrubber').max = radarFrames.length - 1;
-  const lt = $('#loopTicks'); lt.innerHTML = '';
-  [0, 0.5, 1].forEach(f => { const s = document.createElement('span'); const m = Math.round(spanMin * (1 - f)); s.textContent = f === 1 ? 'latest' : `−${m >= 60 ? (m / 60).toFixed(m % 60 ? 1 : 0) + ' h' : m + ' min'}`; lt.appendChild(s); });
-  showFrame(radarFrames.length - 1);
+  for (let i = n - 1; i >= 0; i--) { const t = new Date(latest.t.getTime() - i * stepMin * 60000); addRadarFrame(`radar-${stampUTC(t)}`, radarTpl(t), t, 'MRMS © NOAA via IEM', false); }
+  lastObserved = radarFrames.length - 1;
   const age = Math.round((Date.now() - latest.t.getTime()) / 60000);
-  dRadar.ok(`${radarFrames.length} frames · latest ${age} min old`, tilesReadable ? 'tiles CORS-readable → edge tracker available' : 'tiles display-only (no CORS) → edge tracker unavailable');
-  $('#frameSub').textContent = `MRMS composite · ${stepMin}-min steps · ${age} min old`;
-  if (['edge', 'both'].includes(settings.coneMode)) runEdgeTracker();
+  dRadar.ok(`MRMS · ${radarFrames.length} frames · latest ${age} min old`, tilesReadable ? 'tiles CORS-readable → edge tracker available' : 'tiles display-only (no CORS) → edge tracker unavailable');
+  finishRadar(`MRMS composite (US) · ${stepMin}-min steps · ${age} min old`, [0, 0.5, 1].map(f => { const m = Math.round(spanMin * (1 - f)); return f === 1 ? 'latest' : `−${m >= 60 ? (m / 60).toFixed(m % 60 ? 1 : 0) + ' h' : m + ' min'}`; }));
+}
+// RainViewer global composite: ~2 h of past frames at 10 min plus a 30-min nowcast
+async function buildRadarRV() {
+  dRadar.start('RainViewer frame list…');
+  try {
+    const j = await getJSON(RAINVIEWER);
+    const host = j.host || 'https://tilecache.rainviewer.com';
+    const past = (j.radar && j.radar.past) || [], nowc = (j.radar && j.radar.nowcast) || [];
+    if (!past.length) throw new Error('RainViewer returned no radar frames');
+    const tpl = (fr) => `${host}${fr.path}/256/{z}/{x}/{y}/6/1_1.png`; // colour scheme 6 ≈ NEXRAD palette, smoothed, snow shown
+    past.forEach(fr => addRadarFrame(`radar-rv-${fr.time}`, tpl(fr), new Date(fr.time * 1000), 'Radar © RainViewer', false));
+    lastObserved = radarFrames.length - 1;
+    nowc.forEach(fr => addRadarFrame(`radar-rvn-${fr.time}`, tpl(fr), new Date(fr.time * 1000), 'Radar © RainViewer', true));
+    // CORS check on one tile (for the edge tracker)
+    try { const r = await fetch(tpl(past[past.length - 1]).replace('{z}', 4).replace('{x}', 3).replace('{y}', 6), { mode: 'cors' }); tilesReadable = r.ok; } catch (e) { tilesReadable = false; }
+    const age = Math.round((Date.now() - past[past.length - 1].time * 1000) / 60000);
+    dRadar.ok(`RainViewer · ${past.length} past + ${nowc.length} nowcast frames · latest ${age} min old`, `global composite (NZ, Australia, Colombia where national radars feed it) · ${tilesReadable ? 'CORS ok → edge tracker available' : 'display-only'}`);
+    finishRadar(`RainViewer global · 10-min steps · ${age} min old · +${nowc.length * 10} min nowcast`, ['−2 h', '−1 h', 'now', `+${nowc.length * 10}`]);
+  } catch (e) { dRadar.fail(e, 'no radar coverage from this source here'); $('#frameSub').textContent = 'RainViewer · unavailable'; }
 }
 function showFrame(i) {
   if (!radarFrames.length) return; curFrame = Math.max(0, Math.min(i, radarFrames.length - 1));
   radarFrames.forEach((f, j) => { if (map.getLayer(f.layer)) map.setPaintProperty(f.layer, 'raster-opacity', (j === curFrame && settings.layers.radar) ? 0.78 : 0); });
-  $('#scrubber').value = curFrame; $('#frameTime').textContent = fmtLocal(radarFrames[curFrame].t); $('#liveBadge').hidden = curFrame !== radarFrames.length - 1;
+  $('#scrubber').value = curFrame; $('#frameTime').textContent = fmtLocal(radarFrames[curFrame].t);
+  const f = radarFrames[curFrame]; $('#liveBadge').hidden = !(curFrame === lastObserved || f.future); $('#liveBadge').lastChild.textContent = f.future ? 'NOWCAST' : 'LIVE'; $('#liveBadge').classList.toggle('future', !!f.future);
 }
 $('#scrubber').oninput = (e) => { stopPlay(); showFrame(Number(e.target.value)); };
 $('#loopSel').value = settings.loop; $('#loopSel').onchange = (e) => { settings.loop = e.target.value; saveSettings(); stopPlay(); buildRadar(); };
+$('#radarSrc').value = settings.radarSrc; $('#radarSrc').onchange = (e) => { settings.radarSrc = e.target.value; saveSettings(); stopPlay(); buildRadar(); };
+map.on('moveend', () => { if (mapLoaded && settings.radarSrc === 'auto' && pickRadarMode() !== radarMode && !playing) buildRadar(); });
 function stopPlay() { playing = false; clearInterval(playTimer); $('#playIcon').setAttribute('d', 'M8 5.5 L18 12 L8 18.5 Z'); }
 $('#play').onclick = () => { if (playing) { stopPlay(); return; } playing = true; $('#playIcon').setAttribute('d', 'M7 5 H10.5 V19 H7 Z M13.5 5 H17 V19 H13.5 Z'); playTimer = setInterval(() => { const next = curFrame + 1; showFrame(next >= radarFrames.length ? 0 : next); }, 350); };
 
@@ -375,14 +407,14 @@ map.on('click', 'edge-fill', (e) => { const p = e.features[0].properties; new ma
 /* edge tracker (radar pixels) */
 let edgeBusy = false, edgeTimer = null;
 async function runEdgeTracker() {
-  if (edgeBusy || !mapLoaded || radarFrames.length < 2) return;
+  if (edgeBusy || !mapLoaded || radarFrames.length < 2 || lastObserved < 1) return;
   if (tilesReadable === false) { dEdge.fail(new Error('radar tiles are not CORS-readable in this browser/origin')); return; }
   edgeBusy = true; dEdge.start('reading radar frames…');
   try {
-    const now = radarFrames[radarFrames.length - 1]; let prev = radarFrames[radarFrames.length - 2];
+    if (lastObserved < 1) return; const now = radarFrames[lastObserved]; let prev = radarFrames[lastObserved - 1];
     const dt = Math.max(2, Math.round((now.t - prev.t) / 60000));
     const b = map.getBounds();
-    const res = await RadarTracker.track({ tplNow: radarTpl(now.t), tplPrev: radarTpl(prev.t), dtMin: dt, bounds: { w: b.getWest(), s: b.getSouth(), e: b.getEast(), n: b.getNorth() }, zoom: map.getZoom(), maxPixels: 600000 });
+    const res = await RadarTracker.track({ tplNow: now.tpl, tplPrev: prev.tpl, dtMin: dt, bounds: { w: b.getWest(), s: b.getSouth(), e: b.getEast(), n: b.getNorth() }, zoom: map.getZoom(), maxPixels: 600000 });
     const fills = [], conts = [], outs = [];
     for (const r of res.rings) {
       outs.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: r.coords }, properties: {} });
@@ -467,9 +499,10 @@ function drawWindHeat() {
 }
 function placeWindHeat() { if (!map.getLayer('windheat')) return; const a = map.getStyle().layers.find(l => l.id.startsWith('radar-')) || map.getStyle().layers.find(l => OVERLAY_IDS.has(l.id) && !['hillshade', 'overlay', 'windheat'].includes(l.id)) || map.getStyle().layers.find(l => l.type === 'symbol'); if (a && a.id !== 'windheat') map.moveLayer('windheat', a.id); }
 overlayBuilders.push(() => { if (windField) drawWindHeat(); });
-$('#windHeat').checked = settings.windHeat !== false; $('#windHeat').onchange = (e) => { settings.windHeat = e.target.checked; saveSettings(); drawWindHeat(); };
+function windContrast() { WindLayer.setContrast(settings.windHeat ? settings.windHeatOp / 100 : 0); }
+$('#windHeat').checked = settings.windHeat !== false; $('#windHeat').onchange = (e) => { settings.windHeat = e.target.checked; saveSettings(); drawWindHeat(); windContrast(); }; windContrast();
 $('#windHeatOp').value = settings.windHeatOp; $('#windHeatOpV').textContent = settings.windHeatOp + '%';
-$('#windHeatOp').oninput = (e) => { settings.windHeatOp = Number(e.target.value); $('#windHeatOpV').textContent = settings.windHeatOp + '%'; saveSettings(); if (map.getLayer('windheat')) map.setPaintProperty('windheat', 'raster-opacity', settings.windHeatOp / 100); };
+$('#windHeatOp').oninput = (e) => { settings.windHeatOp = Number(e.target.value); $('#windHeatOpV').textContent = settings.windHeatOp + '%'; saveSettings(); if (map.getLayer('windheat')) map.setPaintProperty('windheat', 'raster-opacity', settings.windHeatOp / 100); windContrast(); };
 function setWindOn(on) {
   $('#windRow').hidden = !on; $('#windLegend').hidden = !on;
   if (on) { if (windField) { WindLayer.setField(windField); WindLayer.start(); } loadWind(!windField); }
@@ -687,5 +720,5 @@ renderPlaces();
 function buildAll() { overlayBuilders.forEach(fn => fn()); Object.keys(settings.layers).forEach(applyLayerState); buildRadar(); loadAlerts(); loadProbSevere(); renderPlaces(); }
 $('#retest').onclick = () => { if (mapLoaded) buildAll(); };
 setInterval(() => { if (mapLoaded && !playing) { loadAlerts(); loadProbSevere(); } }, 120000);
-setInterval(() => { if (mapLoaded && !playing && curFrame === radarFrames.length - 1) buildRadar(); }, 300000);
+setInterval(() => { if (mapLoaded && !playing && curFrame === lastObserved) buildRadar(); }, 300000);
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});

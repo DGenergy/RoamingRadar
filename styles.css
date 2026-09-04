@@ -55,6 +55,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .live { display: inline-flex !important; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 10px; background: rgba(62,196,110,0.16); font-family: var(--cond); font-weight: 700; font-size: 11px; letter-spacing: 0.08em; color: var(--ok); }
 .live[hidden] { display: none !important; }
 .live i { width: 6px; height: 6px; border-radius: 3px; background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.live.future { background: rgba(124,203,234,0.16); color: var(--accent2); }
+.live.future i { background: var(--accent2); box-shadow: 0 0 6px var(--accent2); }
 .sub { font-size: 12px; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .scrub select { height: 40px; padding: 0 10px; border-radius: 20px; background: rgba(43,54,65,0.35); color: var(--ink); border: 1px solid var(--rule); font-family: var(--mono); font-size: 12px; }
 input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; height: 28px; }

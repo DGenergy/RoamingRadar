@@ -43,7 +43,8 @@ Netlify Drop and Cloudflare Pages work the same way (drag the folder in).
 
 | Layer | Source | Notes |
 |---|---|---|
-| Radar loop | Iowa State Mesonet tile cache, `mrms::lcref-YYYYMMDDHHMM` | MRMS composite reflectivity, 2-min archive, 1–12 h loop |
+| Radar loop (US) | Iowa State Mesonet tile cache, `mrms::lcref-YYYYMMDDHHMM` | MRMS composite reflectivity, 2-min archive, 1–12 h loop |
+| Radar loop (elsewhere) | RainViewer public API + tile cache | global composite of national radars (NZ, Australia, parts of Colombia), 2 h past + 30 min nowcast; auto-selected outside the US |
 | Storm objects | NOAA ProbSevere v3 via the `noaa-mrms-pds` S3 bucket | polygons + motion; grouped into line cones |
 | Radar edges | `tracker.js` on the IEM tiles | needs CORS-readable tiles (the Data sources row says) |
 | Alerts | `api.weather.gov/alerts/active` | polygon alerts drawn; zone-based products counted but not drawn yet |

@@ -4,7 +4,7 @@
    u/v in knots (east/north), spd in knots. Grid row j runs south→north, column i west→east. */
 const WindLayer = (() => {
   let map, canvas, ctx, field = null, hour = 0, particles = [], running = false, paused = false, raf = 0, moving = false, dpr = 1, W = 0, H = 0;
-  let lastFrame = 0;
+  let lastFrame = 0, contrast = 0; // 0..1 — how opaque the heat map under the particles is
   const RAMP = [[0, '#7FA7C4'], [5, '#6FBFD8'], [10, '#5FD68A'], [15, '#C9DE7A'], [20, '#F0C95A'], [25, '#F0A35A'], [30, '#E8774F'], [40, '#E0554D'], [50, '#C41E9F']];
   function color(kt) { let c = RAMP[0][1]; for (const [t, col] of RAMP) if (kt >= t) c = col; return c; }
   const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
@@ -14,6 +14,7 @@ const WindLayer = (() => {
     for (let i = 1; i < RAMP_RGB.length; i++) { const [t1, c1] = RAMP_RGB[i], [t0, c0] = RAMP_RGB[i - 1]; if (kt <= t1) { const f = (kt - t0) / (t1 - t0); return [c0[0] + (c1[0] - c0[0]) * f, c0[1] + (c1[1] - c0[1]) * f, c0[2] + (c1[2] - c0[2]) * f]; } }
     return last[1];
   }
+  function mixWhite(h, f) { const c = hex(h); return `rgb(${Math.round(c[0] + (255 - c[0]) * f)},${Math.round(c[1] + (255 - c[1]) * f)},${Math.round(c[2] + (255 - c[2]) * f)})`; }
   const mercY = (lat) => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
   const invMercY = (y) => (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180 / Math.PI;
   // Render the speed field for an hour as an image aligned to the field's bounds in web-mercator,
@@ -89,10 +90,15 @@ const WindLayer = (() => {
       const seg = [c.x * dpr, c.y * dpr]; for (let k = 1; k <= n; k++) { const idx = p.h.length - 2 * k; const q = map.project([p.h[idx], p.h[idx + 1]]); seg.push(q.x * dpr, q.y * dpr); }
       list.push({ seg, kt: s[2] });
     }
+    // Over an opaque heat map the ramp colours vanish into the same colours beneath, so blend the
+    // strokes toward white and underlay a dark halo as the heat map opacity rises.
+    const lift = Math.min(1, contrast * 1.4);
     for (const [col, list] of byColor) {
-      ctx.strokeStyle = col; ctx.beginPath();
+      ctx.beginPath();
       for (const { seg } of list) { ctx.moveTo(seg[0], seg[1]); for (let k = 2; k < seg.length; k += 2) ctx.lineTo(seg[k], seg[k + 1]); }
-      ctx.lineWidth = (0.9 + Math.min(list[0].kt, 40) / 36) * dpr; ctx.globalAlpha = 0.75; ctx.stroke();
+      const w = (0.9 + Math.min(list[0].kt, 40) / 36) * dpr;
+      if (lift > 0.05) { ctx.strokeStyle = 'rgba(5,10,14,1)'; ctx.lineWidth = w + 2.2 * dpr * lift; ctx.globalAlpha = 0.45 * lift; ctx.stroke(); }
+      ctx.strokeStyle = lift > 0.05 ? mixWhite(col, 0.75 * lift) : col; ctx.lineWidth = w; ctx.globalAlpha = 0.75 + 0.2 * lift; ctx.stroke();
     }
     ctx.globalAlpha = 1;
     raf = requestAnimationFrame(frame);
@@ -112,6 +118,7 @@ const WindLayer = (() => {
     stop() { running = false; if (raf) cancelAnimationFrame(raf); raf = 0; },
     off() { this.wanted = false; this.stop(); field = null; ctx.clearRect(0, 0, W, H); },
     pause(p) { paused = p; },
+    setContrast(k) { contrast = Math.max(0, Math.min(1, k || 0)); },
     sampleAt(lng, lat) { return sample(lng, lat); },
     heatImage, colorSmooth, color, RAMP
   };
