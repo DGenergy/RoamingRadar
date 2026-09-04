@@ -81,8 +81,7 @@ const WindLayer = (() => {
     const pxPerKt = 0.03 * (dt / 16) * (1 + 0.8 * zf); // 20 kt ≈ 0.6 px per frame at 60 fps zoomed out, ~1.1 zoomed in
     const maxPts = 14 + Math.round((HIST - 14) * zf);  // streak point budget grows with zoom
     if (moving) { ctx.clearRect(0, 0, W, H); }
-    else { // trails fade faster over light ground, where the halo would otherwise smear into a grey shadow
-      ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = `rgba(0,0,0,${(0.84 - 0.18 * bgLight).toFixed(3)})`; ctx.fillRect(0, 0, W, H); ctx.globalCompositeOperation = 'source-over'; }
+    else { ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = 'rgba(0,0,0,0.84)'; ctx.fillRect(0, 0, W, H); ctx.globalCompositeOperation = 'source-over'; }
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     const byColor = new Map();
     for (const p of particles) {
@@ -99,22 +98,36 @@ const WindLayer = (() => {
       const seg = [c.x * dpr, c.y * dpr]; for (let k = 1; k <= n; k++) { const idx = p.h.length - 2 * k; const q = map.project([p.h[idx], p.h[idx + 1]]); seg.push(q.x * dpr, q.y * dpr); }
       list.push({ seg, kt: s[2] });
     }
-    // Legibility has two enemies: an opaque heat map (same ramp colours underneath → blend the core
-    // toward white) and a light basemap (pale ramp colours on pale ground → keep the core saturated,
-    // darken it a touch). Both get a dark halo under the stroke, weighted by whichever is stronger.
+    // Legibility has two enemies. An opaque heat map puts the same ramp colours underneath, so the
+    // core blends toward white over a dark halo. A light basemap washes the pale ramp colours out, so
+    // there the streak is drawn as a tapered comet — a darkened, opaque head thinning and fading to
+    // the tail — which reads as direction + gradient without an outline (outlines looked like ants).
     const lift = Math.min(1, contrast * 1.4);
-    const halo = Math.max(0.45 * lift, bgLight * 0.6);   // halo opacity
-    const haloW = dpr * (2.2 * lift > 1.5 * bgLight ? 2.2 * lift : 1.5 * bgLight); // halo width beyond the core
     const scale = 1 + 0.35 * zf;                          // stroke width scale with zoom
+    const light = lift < 0.05 && bgLight > 0.3;
+    // three taper stages from head to tail: [alpha, width factor, share of the streak]
+    const STAGES = light ? [[1, 1.15, 0.34], [0.62, 0.85, 0.33], [0.3, 0.55, 0.33]] : [[1, 1, 1]];
     for (const [col, list] of byColor) {
-      ctx.beginPath();
-      for (const { seg } of list) { ctx.moveTo(seg[0], seg[1]); for (let k = 2; k < seg.length; k += 2) ctx.lineTo(seg[k], seg[k + 1]); }
-      const w = (0.9 + Math.min(list[0].kt, 40) / 36) * dpr * scale * (1 + 0.25 * bgLight);
-      if (halo > 0.05) { ctx.strokeStyle = 'rgb(5,10,14)'; ctx.lineWidth = w + haloW; ctx.globalAlpha = halo; ctx.stroke(); }
+      const w = (0.9 + Math.min(list[0].kt, 40) / 36) * dpr * scale;
       let core = col;
       if (lift > 0.05) core = mixWhite(col, 0.75 * lift);
-      else if (bgLight > 0.05) core = mixBlack(col, 0.3 * bgLight);
-      ctx.strokeStyle = core; ctx.lineWidth = w; ctx.globalAlpha = 0.75 + 0.25 * Math.max(lift, bgLight); ctx.stroke();
+      else if (light) core = mixBlack(col, 0.38 * bgLight);
+      if (!light && lift > 0.05) { // dark halo under the strokes over the heat map
+        ctx.beginPath();
+        for (const { seg } of list) { ctx.moveTo(seg[0], seg[1]); for (let k = 2; k < seg.length; k += 2) ctx.lineTo(seg[k], seg[k + 1]); }
+        ctx.strokeStyle = 'rgb(5,10,14)'; ctx.lineWidth = w + 2.2 * dpr * lift; ctx.globalAlpha = 0.45 * lift; ctx.stroke();
+      }
+      let from = 0;
+      for (const [alpha, wf, share] of STAGES) {
+        ctx.beginPath();
+        for (const { seg } of list) {
+          const pts = seg.length / 2; const a = Math.floor(pts * from), b2 = Math.min(pts - 1, Math.ceil(pts * (from + share)));
+          if (b2 <= a) continue;
+          ctx.moveTo(seg[a * 2], seg[a * 2 + 1]); for (let k = a + 1; k <= b2; k++) ctx.lineTo(seg[k * 2], seg[k * 2 + 1]);
+        }
+        ctx.strokeStyle = core; ctx.lineWidth = w * wf; ctx.globalAlpha = (light ? 1 : 0.75 + 0.2 * lift) * alpha; ctx.stroke();
+        from += share;
+      }
     }
     ctx.globalAlpha = 1;
     raf = requestAnimationFrame(frame);

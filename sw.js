@@ -1,6 +1,6 @@
 /* Radar Route service worker — caches the app shell and the map library.
    Live weather data is always fetched from the network (never cached). */
-const VERSION = 'rr-v5';
+const VERSION = 'rr-v6';
 const SHELL = [
   './', './index.html', './styles.css', './app.js', './tracker.js', './wind.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png'

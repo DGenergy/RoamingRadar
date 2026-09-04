@@ -210,7 +210,7 @@ $('#loopSel').value = settings.loop; $('#loopSel').onchange = (e) => { settings.
 $('#radarSrc').value = settings.radarSrc; $('#radarSrc').onchange = (e) => { settings.radarSrc = e.target.value; saveSettings(); stopPlay(); buildRadar(); };
 map.on('moveend', () => { if (mapLoaded && settings.radarSrc === 'auto' && pickRadarMode() !== radarMode && !playing) buildRadar(); });
 function stopPlay() { playing = false; clearInterval(playTimer); $('#playIcon').setAttribute('d', 'M8 5.5 L18 12 L8 18.5 Z'); }
-$('#play').onclick = () => { if (playing) { stopPlay(); return; } playing = true; $('#playIcon').setAttribute('d', 'M7 5 H10.5 V19 H7 Z M13.5 5 H17 V19 H13.5 Z'); playTimer = setInterval(() => { const next = curFrame + 1; showFrame(next >= radarFrames.length ? 0 : next); }, 350); };
+$('#play').onclick = () => { if (playing) { stopPlay(); return; } playing = true; $('#playIcon').setAttribute('d', 'M7 5 H10.5 V19 H7 Z M13.5 5 H17 V19 H13.5 Z'); playTimer = setInterval(() => { const next = curFrame + 1; showFrame(next >= radarFrames.length ? 0 : next); }, 150); };
 
 /* ============================================================
    ALERTS — NWS active alerts, list, badge, location check
