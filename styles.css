@@ -41,6 +41,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .legend { position: absolute; right: 12px; bottom: calc(var(--sab) + 268px); display: flex; flex-direction: column; gap: 4px; padding: 6px 10px; background: rgba(17,23,28,0.86); border: 1px solid var(--rule); border-radius: 12px; font-family: var(--mono); font-size: 10px; color: var(--ink2); z-index: 3; }
 .legend .bar { width: 120px; height: 7px; border-radius: 4px; background: linear-gradient(90deg,#1E9E3A 0%,#1E9E3A 30%,#F5D000 30%,#F5D000 60%,#E8471F 60%,#E8471F 85%,#C41E9F 85%); }
 .legend .lbl { display: flex; justify-content: space-between; }
+.legend .rbar { display: flex; flex-direction: column; gap: 4px; }
+.legend.noradar { bottom: calc(var(--sab) + 190px); }
+.legend .rbar[hidden] + .wbar { border-top: 0; margin-top: 0; padding-top: 0; }
 .legend .wbar { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--rule); }
 .legend .bar.wind { background: linear-gradient(90deg,#7FA7C4 0%,#6FBFD8 12%,#5FD68A 25%,#C9DE7A 37%,#F0C95A 50%,#F0A35A 62%,#E8774F 75%,#E0554D 88%,#C41E9F 100%); }
 
@@ -61,6 +64,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .scrub select { height: 40px; padding: 0 10px; border-radius: 20px; background: rgba(43,54,65,0.35); color: var(--ink); border: 1px solid var(--rule); font-family: var(--mono); font-size: 12px; }
 input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; height: 28px; }
 .ticks { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; color: var(--ink3); }
+.scrub.noradar .r1, .scrub.noradar #scrubber, .scrub.noradar .ticks { display: none; }
+.scrub.noradar .windrow { border-top: 0; padding-top: 0; margin-top: 0; }
 .windrow { display: flex; align-items: center; gap: 10px; margin-top: 2px; padding-top: 6px; border-top: 1px solid var(--rule); }
 .windrow .wlabel { font-family: var(--cond); font-weight: 700; font-size: 11px; letter-spacing: 0.08em; color: var(--accent2); flex: none; }
 .windrow input[type=range] { flex-grow: 1; height: 24px; }

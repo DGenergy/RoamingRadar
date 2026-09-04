@@ -5,6 +5,7 @@
 const WindLayer = (() => {
   let map, canvas, ctx, field = null, hour = 0, particles = [], running = false, paused = false, raf = 0, moving = false, dpr = 1, W = 0, H = 0;
   let lastFrame = 0, contrast = 0; // 0..1 — how opaque the heat map under the particles is
+  let bgLight = 0;                 // 0..1 — how light the basemap under the particles is (dark style 0, positron/topo 1)
   const RAMP = [[0, '#7FA7C4'], [5, '#6FBFD8'], [10, '#5FD68A'], [15, '#C9DE7A'], [20, '#F0C95A'], [25, '#F0A35A'], [30, '#E8774F'], [40, '#E0554D'], [50, '#C41E9F']];
   function color(kt) { let c = RAMP[0][1]; for (const [t, col] of RAMP) if (kt >= t) c = col; return c; }
   const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
@@ -15,6 +16,10 @@ const WindLayer = (() => {
     return last[1];
   }
   function mixWhite(h, f) { const c = hex(h); return `rgb(${Math.round(c[0] + (255 - c[0]) * f)},${Math.round(c[1] + (255 - c[1]) * f)},${Math.round(c[2] + (255 - c[2]) * f)})`; }
+  function mixBlack(h, f) { const c = hex(h); return `rgb(${Math.round(c[0] * (1 - f))},${Math.round(c[1] * (1 - f))},${Math.round(c[2] * (1 - f))})`; }
+  // Zoom factor 0..1: zoomed out (≤5) 0, street-level (≥10) 1. Streaks get thicker and longer as you zoom in
+  // so they read at the same visual weight against more detailed maps instead of shrinking to hairlines.
+  function zoomF() { const z = map ? map.getZoom() : 6; return Math.max(0, Math.min(1, (z - 5) / 5)); }
   const mercY = (lat) => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
   const invMercY = (y) => (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180 / Math.PI;
   // Render the speed field for an hour as an image aligned to the field's bounds in web-mercator,
@@ -44,9 +49,10 @@ const WindLayer = (() => {
     ctx.clearRect(0, 0, W, H);
     if (field) seed();
   }
-  function count() { return Math.max(1200, Math.min(4000, Math.round((W * H) / (dpr * dpr) / 380))); }
+  // fewer, bolder particles when zoomed in (they are drawn larger there)
+  function count() { const base = Math.round((W * H) / (dpr * dpr) / 380); return Math.max(700, Math.min(4000, Math.round(base * (1 - 0.45 * zoomF())))); }
   function bounds() { const b = map.getBounds(); return { w: b.getWest(), s: b.getSouth(), e: b.getEast(), n: b.getNorth() }; }
-  const HIST = 14;
+  const HIST = 22;                  // history buffer; the streak uses 14 points zoomed out, all 22 zoomed in
   function spawn(p, b) { p.lng = b.w + Math.random() * (b.e - b.w); p.lat = b.s + Math.random() * (b.n - b.s); p.age = 0; p.life = 60 + Math.random() * 100; p.h = []; return p; }
   function seed() { const b = bounds(); const n = count(); particles = []; for (let i = 0; i < n; i++) { const p = spawn({}, b); p.age = Math.random() * p.life; particles.push(p); } }
 
@@ -71,10 +77,13 @@ const WindLayer = (() => {
     const b = bounds();
     // degrees per screen pixel at this view, so particle speed on screen is independent of zoom (px/frame ∝ knots)
     const degPerPxX = (b.e - b.w) / (W / dpr), degPerPxY = (b.n - b.s) / (H / dpr);
-    const pxPerKt = 0.03 * (dt / 16);            // 20 kt ≈ 0.6 px per frame at 60 fps (Windfinder-ish pace)
+    const zf = zoomF();
+    const pxPerKt = 0.03 * (dt / 16) * (1 + 0.8 * zf); // 20 kt ≈ 0.6 px per frame at 60 fps zoomed out, ~1.1 zoomed in
+    const maxPts = 14 + Math.round((HIST - 14) * zf);  // streak point budget grows with zoom
     if (moving) { ctx.clearRect(0, 0, W, H); }
-    else { ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = 'rgba(0,0,0,0.84)'; ctx.fillRect(0, 0, W, H); ctx.globalCompositeOperation = 'source-over'; }
-    ctx.lineCap = 'round';
+    else { // trails fade faster over light ground, where the halo would otherwise smear into a grey shadow
+      ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = `rgba(0,0,0,${(0.84 - 0.18 * bgLight).toFixed(3)})`; ctx.fillRect(0, 0, W, H); ctx.globalCompositeOperation = 'source-over'; }
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     const byColor = new Map();
     for (const p of particles) {
       const s = sample(p.lng, p.lat);
@@ -84,21 +93,28 @@ const WindLayer = (() => {
       p.lng = nlng; p.lat = nlat;
       const c = map.project([nlng, nlat]);
       if (c.x < -20 || c.y < -20 || c.x > W / dpr + 20 || c.y > H / dpr + 20) { spawn(p, b); continue; }
-      // streak length grows with speed: 2 history points at calm, the full buffer at 35 kt+
-      const n = Math.min(p.h.length / 2, 2 + Math.round(Math.min(s[2], 35) / 35 * (HIST - 2)));
+      // streak length grows with speed: 2 history points at calm, the full budget at 35 kt+
+      const n = Math.min(p.h.length / 2, 2 + Math.round(3 * zf) + Math.round(Math.min(s[2], 35) / 35 * (maxPts - 5)));
       const col = color(s[2]); let list = byColor.get(col); if (!list) { list = []; byColor.set(col, list); }
       const seg = [c.x * dpr, c.y * dpr]; for (let k = 1; k <= n; k++) { const idx = p.h.length - 2 * k; const q = map.project([p.h[idx], p.h[idx + 1]]); seg.push(q.x * dpr, q.y * dpr); }
       list.push({ seg, kt: s[2] });
     }
-    // Over an opaque heat map the ramp colours vanish into the same colours beneath, so blend the
-    // strokes toward white and underlay a dark halo as the heat map opacity rises.
+    // Legibility has two enemies: an opaque heat map (same ramp colours underneath → blend the core
+    // toward white) and a light basemap (pale ramp colours on pale ground → keep the core saturated,
+    // darken it a touch). Both get a dark halo under the stroke, weighted by whichever is stronger.
     const lift = Math.min(1, contrast * 1.4);
+    const halo = Math.max(0.45 * lift, bgLight * 0.6);   // halo opacity
+    const haloW = dpr * (2.2 * lift > 1.5 * bgLight ? 2.2 * lift : 1.5 * bgLight); // halo width beyond the core
+    const scale = 1 + 0.35 * zf;                          // stroke width scale with zoom
     for (const [col, list] of byColor) {
       ctx.beginPath();
       for (const { seg } of list) { ctx.moveTo(seg[0], seg[1]); for (let k = 2; k < seg.length; k += 2) ctx.lineTo(seg[k], seg[k + 1]); }
-      const w = (0.9 + Math.min(list[0].kt, 40) / 36) * dpr;
-      if (lift > 0.05) { ctx.strokeStyle = 'rgba(5,10,14,1)'; ctx.lineWidth = w + 2.2 * dpr * lift; ctx.globalAlpha = 0.45 * lift; ctx.stroke(); }
-      ctx.strokeStyle = lift > 0.05 ? mixWhite(col, 0.75 * lift) : col; ctx.lineWidth = w; ctx.globalAlpha = 0.75 + 0.2 * lift; ctx.stroke();
+      const w = (0.9 + Math.min(list[0].kt, 40) / 36) * dpr * scale * (1 + 0.25 * bgLight);
+      if (halo > 0.05) { ctx.strokeStyle = 'rgb(5,10,14)'; ctx.lineWidth = w + haloW; ctx.globalAlpha = halo; ctx.stroke(); }
+      let core = col;
+      if (lift > 0.05) core = mixWhite(col, 0.75 * lift);
+      else if (bgLight > 0.05) core = mixBlack(col, 0.3 * bgLight);
+      ctx.strokeStyle = core; ctx.lineWidth = w; ctx.globalAlpha = 0.75 + 0.25 * Math.max(lift, bgLight); ctx.stroke();
     }
     ctx.globalAlpha = 1;
     raf = requestAnimationFrame(frame);
@@ -119,6 +135,7 @@ const WindLayer = (() => {
     off() { this.wanted = false; this.stop(); field = null; ctx.clearRect(0, 0, W, H); },
     pause(p) { paused = p; },
     setContrast(k) { contrast = Math.max(0, Math.min(1, k || 0)); },
+    setBackground(l) { bgLight = Math.max(0, Math.min(1, l || 0)); },
     sampleAt(lng, lat) { return sample(lng, lat); },
     heatImage, colorSmooth, color, RAMP
   };

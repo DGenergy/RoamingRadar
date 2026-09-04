@@ -48,7 +48,7 @@ Netlify Drop and Cloudflare Pages work the same way (drag the folder in).
 | Storm objects | NOAA ProbSevere v3 via the `noaa-mrms-pds` S3 bucket | polygons + motion; grouped into line cones |
 | Radar edges | `tracker.js` on the IEM tiles | needs CORS-readable tiles (the Data sources row says) |
 | Alerts | `api.weather.gov/alerts/active` | polygon alerts drawn; zone-based products counted but not drawn yet |
-| Wind field | Open-Meteo hourly, 14×12 grid around the viewport (`wind.js`) | animated particles, now to +6 h on the WIND slider; tap the map for a reading |
+| Wind field | Open-Meteo hourly, 14×12 grid around the viewport (`wind.js`) | animated particles (halo + zoom-scaled streaks so they read on light maps and close-ups), now to +6 h on the WIND slider; tap the map for a reading |
 | METAR | Aviation Weather Center → IEM ASOS fallback | station/dir/speed labels |
 | Routes | OSRM demo (no key), Google Routes (key), straight line | ticks every N minutes along the route |
 | Point forecast | `api.weather.gov` hourly | tap a route tick |
